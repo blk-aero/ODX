@@ -13,6 +13,7 @@ from opendm import pseudogeo
 from opendm.tiles.tiler import generate_dem_tiles
 from opendm.cogeo import convert_to_cogeo
 from opendm.utils import add_raster_meta_tags
+from opendm.georeferencing import canonical_reconstruction_path
 
 
 class ODMDEMStage(types.ODM_Stage):
@@ -30,7 +31,10 @@ class ODMDEMStage(types.ODM_Stage):
             ignore_resolution = True
             pseudo_georeference = True
 
-        resolution = gsd.cap_resolution(args.dem_resolution, tree.opensfm_reconstruction, 
+        working_reconstruction = canonical_reconstruction_path(
+            tree, reconstruction.is_georeferenced()
+        )
+        resolution = gsd.cap_resolution(args.dem_resolution, working_reconstruction,
                                         gsd_scaling=1.0,
                                         ignore_gsd=args.ignore_gsd,
                                         ignore_resolution=ignore_resolution and args.ignore_gsd,

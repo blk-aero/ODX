@@ -578,7 +578,7 @@ class OSFMContext:
         
         log.INFO("Wrote reference_lla.json")
 
-    def ground_control_points(self, proj4):
+    def ground_control_points(self, proj4, coordinate_contract=None):
         """
         Load ground control point information.
         """
@@ -596,32 +596,53 @@ class OSFMContext:
 
         if not stats:
             return []
-        
-        ds = DataSet(self.opensfm_project_path)
-        reference = ds.load_reference()
-        t = location.transformer(CRS.from_epsg(4979),
-                        CRS.from_proj4(proj4))
-        
-        def to_geo(point):
-            lat, lon, alt = reference.to_lla(point[0], point[1], point[2])
-            easting, northing, altitude = t.TransformPoint(lon, lat, alt)
-            return [easting, northing, altitude]
-
-        result = []
+        gcps_stats = []
         for gcp in stats.get("gcp_errors", {}).get("details", []):
             if gcp['error'] is None:
                 log.WARNING(f"{gcp['id']} was not used (observations: {len(gcp['observations'])})")
                 continue
-
-            geocoords = to_geo(gcp['coordinates'])
-            result.append({
+            gcps_stats.append({
                 'id': gcp['id'],
                 'observations': gcp['observations'],
-                'coordinates': geocoords,
-                'error': [gcp['error']['x'], gcp['error']['y'], gcp['error']['z']]
+                'coordinates': gcp['coordinates'],
+                'error': [gcp['error']['x'], gcp['error']['y'], gcp['error']['z']],
             })
 
-        return result
+        if coordinate_contract is None:
+            ds = DataSet(self.opensfm_project_path)
+            reference = ds.load_reference()
+            transformer = location.transformer(CRS.from_epsg(4979), CRS.from_proj4(proj4))
+
+            def to_geo(point):
+                lat, lon, alt = reference.to_lla(point[0], point[1], point[2])
+                return list(transformer.TransformPoint(lon, lat, alt))
+
+            return [{
+                'id': gcp['id'],
+                'observations': gcp['observations'],
+                'coordinates': to_geo(gcp['coordinates']),
+                'error': list(gcp['error']),
+            } for gcp in gcps_stats]
+
+        source_coordinates = np.asarray(
+            [gcp['coordinates'] for gcp in gcps_stats], dtype=np.float64
+        )
+        transformed_coordinates = coordinate_contract.transform_points(
+            source_coordinates, apply_storage_offset=False
+        )
+        transformed_errors = coordinate_contract.transform_tangents(
+            source_coordinates,
+            [gcp['error'] for gcp in gcps_stats],
+        )
+        return [
+            {
+                'id': gcp['id'],
+                'observations': gcp['observations'],
+                'coordinates': list(transformed_coordinates[index]),
+                'error': list(transformed_errors[index]),
+            }
+            for index, gcp in enumerate(gcps_stats)
+        ]
     
 
     def name(self):
@@ -750,13 +771,14 @@ def get_submodel_paths(submodels_path, *paths):
     if not os.path.exists(submodels_path):
         return result
 
-    for f in os.listdir(submodels_path):
-        if f.startswith('submodel'):
-            p = os.path.join(submodels_path, f, *paths) 
-            if os.path.exists(p):
-                result.append(p)
-            else:
-                log.WARNING("Missing %s from submodel %s" % (p, f))
+    for project_path in get_submodel_project_paths(submodels_path):
+        p = os.path.join(project_path, *paths)
+        if os.path.exists(p):
+            result.append(p)
+        else:
+            log.WARNING("Missing %s from submodel %s" % (
+                p, os.path.basename(project_path)
+            ))
 
     return result
 
@@ -773,20 +795,31 @@ def get_all_submodel_paths(submodels_path, *all_paths):
     if not os.path.exists(submodels_path):
         return result
 
-    for f in os.listdir(submodels_path):
-        if f.startswith('submodel'):
-            all_found = True
-
-            for ap in all_paths:
-                p = os.path.join(submodels_path, f, ap) 
-                if not os.path.exists(p):
-                    log.WARNING("Missing %s from submodel %s" % (p, f))
-                    all_found = False
-
-            if all_found:
-                result.append([os.path.join(submodels_path, f, ap) for ap in all_paths])
+    for project_path in get_submodel_project_paths(submodels_path):
+        all_found = True
+        for ap in all_paths:
+            p = os.path.join(project_path, ap)
+            if not os.path.exists(p):
+                log.WARNING("Missing %s from submodel %s" % (
+                    p, os.path.basename(project_path)
+                ))
+                all_found = False
+        if all_found:
+            result.append([os.path.join(project_path, ap) for ap in all_paths])
 
     return result
+
+
+def get_submodel_project_paths(submodels_path):
+    """Return submodel project directories in deterministic merge order."""
+    if not os.path.exists(submodels_path):
+        return []
+    return [
+        os.path.join(submodels_path, name)
+        for name in sorted(os.listdir(submodels_path))
+        if name.startswith("submodel")
+        and os.path.isdir(os.path.join(submodels_path, name))
+    ]
 
 def is_submodel(opensfm_root):
     # A bit hackish, but works without introducing additional markers / flags

@@ -12,7 +12,9 @@ odm_georeferencing
 images_resize
 .git
 
-/contrib
+/contrib/*
+!/contrib/__init__.py
+!/contrib/georeferencing/
 /docs
 /hooks
 /img
