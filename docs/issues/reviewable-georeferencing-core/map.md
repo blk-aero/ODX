@@ -22,6 +22,7 @@ orthophoto rendering with clear preconditions.
 ## Decisions so far
 
 <!-- Closed tickets appear here as one-line linked gists. -->
+- [Ticket 01: minimum coordinate contract](issues/01-minimum-coordinate-contract.md) — use an immutable ENU-to-automatic-UTM/UPS contract; defer alignment, split/merge, and secondary artifacts.
 
 ## Not yet specified
 
