@@ -1,0 +1,39 @@
+# Reviewable georeferencing core
+
+## Destination
+
+Replace the broad direct-georeferencing integration with a lean, reviewable
+core for ordinary single-project ODX jobs: canonical processing, a minimal
+persisted exact contract, exact public point/mesh export, and direct
+orthophoto rendering with clear preconditions.
+
+## Notes
+
+- Maintain correctness at the public geometry boundary; delete speculative or
+  unused features rather than preserving them by default.
+- Work from `7eed3705afc149b67d2fe9b129118cf02c3c0c18` on
+  `codex/georeferencing-direct-raster`. Do not disturb the pre-existing
+  deletion of `AGENTS.md`.
+- Use `/ponytail` (full), `/grilling`, and `/domain-modeling`. A direct
+  orthophoto is intentionally distinct from a raster coordinate warp.
+- GitHub Issues are disabled here, so this local Markdown tracker is the
+  canonical map.
+
+## Decisions so far
+
+<!-- Closed tickets appear here as one-line linked gists. -->
+
+## Not yet specified
+
+- After the core boundary is fixed, identify any remaining code that cannot be
+  classified as core, legacy compatibility, or a separately scoped feature.
+
+## Out of scope
+
+- Keeping the unused GDAL exact-raster warp; it is dead production code and
+  should be deleted with its tests.
+- Release/benchmark framework and acceptance-process documentation.
+- The new split/merge coordinate-contract protocol and derivative manifests.
+- Rich contract provenance, broad secondary-artifact exactness, and audit
+  reporting beyond fields needed by the core runtime.
+- The unrelated removal of repository GitHub workflows from the current PR.
