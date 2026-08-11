@@ -24,6 +24,7 @@ orthophoto rendering with clear preconditions.
 <!-- Closed tickets appear here as one-line linked gists. -->
 - [Ticket 01: minimum coordinate contract](issues/01-minimum-coordinate-contract.md) — use an immutable ENU-to-automatic-UTM/UPS contract; defer alignment, split/merge, and secondary artifacts.
 - [Ticket 02: `--align` boundary](issues/02-align-boundary.md) — preserve stock alignment until direct exports are integrated, then reject `--align` at direct-export entry rather than add partial post-CRS alignment.
+- [Ticket 03: split/merge boundary](issues/03-split-merge-boundary.md) — retain stock split/merge until direct integration; then reject georeferenced submodels at direct-export entry before contracts or artifacts, deferring output selection and merge validation.
 
 ## Required implementation
 

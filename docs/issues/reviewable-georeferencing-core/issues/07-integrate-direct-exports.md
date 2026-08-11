@@ -17,4 +17,11 @@ secondary-artifact, or post-CRS-alignment systems with it.
   persisted exact contract for its retained public exports.
 - At direct-path entry in `ODMGeoreferencingStage.process`, `--align` fails
   clearly before a contract or any direct public artifact is published.
+- At that same entry, raise a clear `system.ExitException` before contract
+  resolution or direct artifact publication when
+  `reconstruction.is_georeferenced() and is_submodel(tree.opensfm)`. Do not
+  use `outputs["large"]`: it is false in submodel child processes because
+  split dispatch removes `--split`.
+- The direct path creates no output-selection manifest, shared-observation or
+  derivative manifest, and performs no merge validation; those are deferred.
 - The stock path remains unchanged until this direct path is selected.
