@@ -23,6 +23,11 @@ orthophoto rendering with clear preconditions.
 
 <!-- Closed tickets appear here as one-line linked gists. -->
 - [Ticket 01: minimum coordinate contract](issues/01-minimum-coordinate-contract.md) — use an immutable ENU-to-automatic-UTM/UPS contract; defer alignment, split/merge, and secondary artifacts.
+- [Ticket 02: `--align` boundary](issues/02-align-boundary.md) — preserve stock alignment until direct exports are integrated, then reject `--align` at direct-export entry rather than add partial post-CRS alignment.
+
+## Required implementation
+
+- [Ticket 07: integrate the minimum coordinate contract into direct exports](issues/07-integrate-direct-exports.md) — wire the resolved core boundaries into the ordinary single-project path.
 
 ## Not yet specified
 
