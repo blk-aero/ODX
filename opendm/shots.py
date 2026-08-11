@@ -2,14 +2,25 @@ import os, json
 from opendm import log
 from opendm.pseudogeo import get_pseudogeo_utm, get_pseudogeo_scale
 from opendm.location import transformer
-from pyproj import CRS
+from pyproj import CRS, Transformer
 from osgeo import gdal
 import numpy as np
 import cv2
+from typing import NamedTuple
+
+from opendm.georeferencing import coordinate_contract_metadata, transform_camera_poses
+
+
+class _CameraReportRecord(NamedTuple):
+    filename: str
+    shot: dict
+    camera: dict
+    centre: np.ndarray
+    world_to_camera_rotation: np.ndarray
 
 def get_rotation_matrix(rotation):
     """Get rotation as a 3x3 matrix."""
-    return cv2.Rodrigues(rotation)[0]
+    return cv2.Rodrigues(np.asarray(rotation, dtype=float))[0]
 
 def matrix_to_rotation(rotation_matrix):
     R = np.array(rotation_matrix, dtype=float)
@@ -23,10 +34,13 @@ def get_origin(shot):
     """The origin of the pose in world coordinates."""
     return -get_rotation_matrix(np.array(shot['rotation'])).T.dot(np.array(shot['translation']))
 
-def get_geojson_shots_from_opensfm(reconstruction_file, utm_srs=None, utm_offset=None, pseudo_geotiff=None, a_matrix=None):
+def get_geojson_shots_from_opensfm(reconstruction_file, utm_srs=None, utm_offset=None, pseudo_geotiff=None, a_matrix=None, coordinate_contract=None):
     """
     Extract shots from OpenSfM's reconstruction.json
     """
+    if coordinate_contract is not None:
+        return _get_exact_geojson_shots(reconstruction_file, coordinate_contract)
+
     pseudo_geocoords = None
 
     if pseudo_geotiff is not None and os.path.exists(pseudo_geotiff):
@@ -126,6 +140,71 @@ def get_geojson_shots_from_opensfm(reconstruction_file, utm_srs=None, utm_offset
         }
     else:
         raise RuntimeError("%s does not exist." % reconstruction_file)
+
+
+def _get_exact_geojson_shots(reconstruction_file, coordinate_contract):
+    """Serialize topocentric OpenSfM poses through the exact coordinate contract."""
+    if not os.path.exists(reconstruction_file):
+        raise RuntimeError("%s does not exist." % reconstruction_file)
+    with open(reconstruction_file, "r") as reconstruction_stream:
+        reconstructions = json.load(reconstruction_stream)
+
+    records = []
+    added_shots = set()
+    for reconstruction in reconstructions:
+        cameras = reconstruction.get("cameras", {})
+        for filename, shot in reconstruction.get("shots", {}).items():
+            camera_id = shot.get("camera")
+            if camera_id not in cameras or filename in added_shots:
+                continue
+            records.append(_CameraReportRecord(
+                filename,
+                shot,
+                cameras[camera_id],
+                get_origin(shot),
+                get_rotation_matrix(shot["rotation"]),
+            ))
+            added_shots.add(filename)
+
+    metadata = coordinate_contract_metadata(coordinate_contract)
+    if not records:
+        return {"type": "FeatureCollection", "features": [], "coordinate_contract": metadata}
+
+    poses = transform_camera_poses(
+        [record.centre for record in records],
+        [record.world_to_camera_rotation for record in records],
+        coordinate_contract,
+    )
+    geographic = Transformer.from_crs(
+        coordinate_contract.output_crs, CRS.from_epsg(4979), always_xy=True
+    )
+    longitude, latitude, height = geographic.transform(*poses.centres.T)
+    features = []
+    for index, record in enumerate(records):
+        centre = poses.centres[index]
+        rotation = matrix_to_rotation(poses.world_to_camera_rotations[index])
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "filename": record.filename,
+                "camera": record.shot.get("camera"),
+                "focal": record.camera.get("focal", record.camera.get("focal_x")),
+                "width": record.camera.get("width", 0),
+                "height": record.camera.get("height", 0),
+                "capture_time": record.shot.get("capture_time", 0),
+                "translation": list(centre),
+                "rotation": list(rotation),
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [longitude[index], latitude[index], height[index]],
+            },
+        })
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "coordinate_contract": metadata,
+    }
 
 def merge_geojson_shots(geojson_shots_files, output_geojson_file):
     result = {}

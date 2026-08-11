@@ -351,6 +351,7 @@ class ODM_Tree(object):
         self.opensfm_reconstruction_nvm = os.path.join(self.opensfm, 'undistorted/reconstruction.nvm')
         self.opensfm_geocoords_reconstruction = os.path.join(self.opensfm, 'reconstruction.geocoords.json')
         self.opensfm_topocentric_reconstruction = os.path.join(self.opensfm, 'reconstruction.topocentric.json')
+        self.opensfm_compatibility_provenance = os.path.join(self.opensfm, 'reconstruction.compatibility.json')
 
         # OpenMVS
         self.openmvs_model = os.path.join(self.openmvs, 'scene_dense_dense_filtered.ply')

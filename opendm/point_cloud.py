@@ -320,7 +320,8 @@ def post_point_cloud_steps(args, tree, rerun=False):
         
         if not io.file_exists(tree.odm_georeferencing_model_las) or rerun:
             system.run("pdal translate -i \"{}\" "
-                "-o \"{}\" ".format(
+                "-o \"{}\" "
+                "--writers.las.forward=all ".format(
                     tree.odm_georeferencing_model_laz,
                     tree.odm_georeferencing_model_las))
         else:

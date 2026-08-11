@@ -8,6 +8,12 @@ from opendm.location import transformer
 from osgeo import ogr
 from opendm.shots import get_origin
 
+
+def write_coordinate_contract_tags(collection, coordinate_contract):
+    collection.update_tags({
+        "ODX_COORDINATE_CONTRACT": json.dumps(coordinate_contract)
+    })
+
 def compute_boundary_from_shots(reconstruction_json, buffer=0, reconstruction_offset=(0, 0)):
     if not os.path.isfile(reconstruction_json):
         raise IOError(reconstruction_json + " does not exist.")
@@ -91,20 +97,23 @@ def as_polygon(boundary):
 def as_geojson(boundary):
     return '{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Polygon","coordinates":[%s]}}]}' % str(list(map(list, boundary)))
 
-def export_to_bounds_files(boundary, proj4, bounds_json_file, bounds_gpkg_file):
+def export_to_bounds_files(boundary, proj4, bounds_json_file, bounds_gpkg_file, coordinate_contract=None):
+    collection = {
+        "type": "FeatureCollection",
+        "name": "bounds",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [boundary]
+            }
+        }]
+    }
+    if coordinate_contract is not None:
+        collection["coordinate_contract"] = coordinate_contract
     with open(bounds_json_file, "w") as f:
-        f.write(json.dumps({
-            "type": "FeatureCollection",
-            "name": "bounds",
-            "features": [{
-                "type": "Feature",
-                "properties": {},
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [boundary]
-                }
-            }]
-        }))
+        f.write(json.dumps(collection))
     
     if os.path.isfile(bounds_gpkg_file):
         os.remove(bounds_gpkg_file)
@@ -115,4 +124,5 @@ def export_to_bounds_files(boundary, proj4, bounds_json_file, bounds_gpkg_file):
                         schema=src.schema) as dst:
             for feature in src:
                 dst.write(feature)
-
+            if coordinate_contract is not None:
+                write_coordinate_contract_tags(dst, coordinate_contract)

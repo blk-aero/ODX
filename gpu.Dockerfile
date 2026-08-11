@@ -34,8 +34,9 @@ WORKDIR /code
 # Copy everything we built from the builder
 COPY --from=builder /code /code
 
-# Copy the Python libraries installed via pip from the builder
-COPY --from=builder /usr/local /usr/local
+# Copy only the Python runtime installed via pip, not the builder's CUDA toolkit
+COPY --from=builder /usr/local/lib/python3.12 /usr/local/lib/python3.12
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 RUN apt-get update -y \
  && apt-get install -y ffmpeg libtbbmalloc2
@@ -46,7 +47,7 @@ RUN bash configure.sh installruntimedeps \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
   && bash run.sh --help \
-  && bash -c "eval $(python3 /code/opendm/context.py) && python3 -c 'from opensfm import io, pymap'"
+  && bash -c "eval $(cd /code && python3 -m opendm.context) && python3 -c 'from opensfm import io, pymap'"
 
 # Entry point
 ENTRYPOINT ["python3", "/code/run.py"]

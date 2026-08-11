@@ -1,7 +1,9 @@
 import os
 import shutil
+import json
+import numpy as np
 from opendm import log
-from opendm.osfm import OSFMContext, get_submodel_argv, get_submodel_paths, get_all_submodel_paths
+from opendm.osfm import OSFMContext, get_submodel_argv, get_submodel_paths, get_all_submodel_paths, get_submodel_project_paths
 from opendm import types
 from opendm import io
 from opendm import system
@@ -17,6 +19,111 @@ from opendm.utils import double_quote, add_raster_meta_tags
 from opendm.tiles.tiler import generate_dem_tiles
 from opendm.cogeo import convert_to_cogeo
 from opendm import multispectral
+from opendm.georeferencing import (
+    CoordinateContractError,
+    coordinate_contract_metadata,
+    load_coordinate_contract,
+    load_output_selection,
+    load_split_merge_derivatives,
+    validate_split_merge,
+)
+from stages.odm_georeferencing import resolve_project_output_selection
+
+
+SPLIT_OVERLAP_PRODUCT_TOLERANCE = 1.0
+
+
+def _propagate_output_selection(selection_path, submodel_paths):
+    for opensfm_path in submodel_paths:
+        project_path = os.path.abspath(os.path.join(opensfm_path, ".."))
+        destination = os.path.join(
+            project_path, "odm_georeferencing", "output_selection.json"
+        )
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copyfile(selection_path, destination)
+
+
+def _validate_submodel_derivatives(tree):
+    selection_path = tree.path("odm_georeferencing", "output_selection.json")
+    selection = load_output_selection(selection_path)
+    contracts = []
+    project_paths = []
+    for project_path in get_submodel_project_paths(tree.submodels_path):
+        manifest = os.path.join(
+            project_path, "odm_georeferencing", "coordinate_contract.json"
+        )
+        contracts.append(load_coordinate_contract(manifest))
+        project_paths.append(project_path)
+
+    validate_split_merge(selection, contracts)
+    overlap_samples = []
+    published_positions_by_id = {}
+    covered_pairs = set()
+    for contract_index, (project_path, contract) in enumerate(
+        zip(project_paths, contracts)
+    ):
+        _, _, output_observations = load_split_merge_derivatives(
+            project_path, contract
+        )
+        persisted_output_by_id = {
+            observation.identifier: observation.output
+            for observation in output_observations
+        }
+        shots_path = os.path.join(project_path, "odm_report", "shots.geojson")
+        if not os.path.exists(shots_path):
+            continue
+        try:
+            with open(shots_path) as shots_file:
+                shots = json.load(shots_file)
+            if shots.get("coordinate_contract") != coordinate_contract_metadata(contract):
+                raise ValueError("report metadata differs from its coordinate contract")
+            for feature in shots.get("features", ()):
+                properties = feature.get("properties", {})
+                identifier = properties.get("filename")
+                output = properties.get("translation")
+                if identifier is None or output is None:
+                    continue
+                if len(output) != 3:
+                    raise ValueError("published camera position is not three-dimensional")
+                if identifier not in persisted_output_by_id or not np.allclose(
+                    output, persisted_output_by_id[identifier], atol=1e-9, rtol=0.0
+                ):
+                    raise ValueError(
+                        "published camera position differs from derivative metadata"
+                    )
+                for first_index, first_output in published_positions_by_id.get(
+                    identifier, ()
+                ):
+                    overlap_samples.append((
+                        first_index, [first_output], contract_index, [output]
+                    ))
+                    covered_pairs.add((first_index, contract_index))
+                published_positions_by_id.setdefault(identifier, []).append(
+                    (contract_index, output)
+                )
+        except CoordinateContractError:
+            raise
+        except Exception as error:
+            raise CoordinateContractError(
+                "could not validate georeferenced overlap metadata",
+                artifact=shots_path, operation="overlap validation", cause=error,
+            ) from error
+    missing_pairs = [
+        (index, index + 1) for index in range(len(contracts) - 1)
+        if (index, index + 1) not in covered_pairs
+    ]
+    if missing_pairs:
+        raise CoordinateContractError(
+            "adjacent submodels {} have no shared Earth-referenced control observation".format(
+                missing_pairs
+            ),
+            artifact="split merge", operation="overlap validation",
+        )
+    validate_split_merge(
+        selection, contracts, overlap_samples=overlap_samples,
+        product_tolerance=SPLIT_OVERLAP_PRODUCT_TOLERANCE,
+    )
+    return selection, tuple(contracts)
 
 class ODMSplitStage(types.ODM_Stage):
     def process(self, args, outputs):
@@ -64,6 +171,7 @@ class ODMSplitStage(types.ODM_Stage):
 
                 octx.setup(args, tree.dataset_raw, photos, reconstruction=reconstruction, append_config=config, rerun=self.rerun())
                 octx.photos_to_metadata(photos, args.rolling_shutter, args.rolling_shutter_readout, args.gps_accuracy, self.rerun())
+                resolve_project_output_selection(tree, reconstruction, args)
 
                 self.update_progress(5)
 
@@ -85,6 +193,10 @@ class ODMSplitStage(types.ODM_Stage):
                 # Find paths of all submodels
                 mds = metadataset.MetaDataSet(tree.opensfm)
                 submodel_paths = [os.path.abspath(p) for p in mds.get_submodel_paths()]
+                _propagate_output_selection(
+                    tree.path("odm_georeferencing", "output_selection.json"),
+                    submodel_paths,
+                )
 
                 for sp in submodel_paths:
                     sp_octx = OSFMContext(sp)
@@ -174,6 +286,15 @@ class ODMSplitStage(types.ODM_Stage):
                 # Remove invalid submodels
                 submodel_paths = [p for p in submodel_paths if not p in remove_paths]
 
+                # Both local and remote split reconstruction paths bypass the
+                # normal OpenSfM stage that marks a newly reconstructed model.
+                # Authorize first-time contract creation only for submodels
+                # that successfully reached this fresh reconstruction frontier.
+                for sp in submodel_paths:
+                    OSFMContext(sp).touch(
+                        os.path.join(sp, "fresh_reconstruction.marker")
+                    )
+
                 # Run ODX toolchain for each submodel
                 if local_workflow:
                     for sp in submodel_paths:
@@ -210,6 +331,8 @@ class ODMMergeStage(types.ODM_Stage):
         if outputs['large']:
             if not os.path.exists(tree.submodels_path):
                 raise system.ExitException("We reached the merge stage, but %s folder does not exist. Something must have gone wrong at an earlier stage. Check the log and fix possible problem before restarting?" % tree.submodels_path)
+
+            _validate_submodel_derivatives(tree)
                 
 
             # Merge point clouds

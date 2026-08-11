@@ -14,7 +14,12 @@ from opendm.point_cloud import export_info_json
 from opendm.cropper import Cropper
 from opendm.orthophoto import get_orthophoto_vars, get_max_memory, generate_png
 from opendm.tiles.tiler import generate_colored_hillshade
-from opendm.utils import get_raster_stats, np_from_json
+from opendm.utils import get_raster_stats
+from opendm.georeferencing import (
+    canonical_reconstruction_path,
+    CoordinateContractError,
+    coordinate_contract_metadata,
+)
 
 def hms(seconds):
     h = seconds // 3600
@@ -49,14 +54,18 @@ class ODMReport(types.ODM_Stage):
         if not io.file_exists(shots_geojson) or self.rerun():
             # Extract geographical camera shots
             if reconstruction.is_georeferenced():
-                # Check if alignment has been performed (we need to transform our shots if so)
-                a_matrix = None
-                if io.file_exists(tree.odm_georeferencing_alignment_matrix):
-                    with open(tree.odm_georeferencing_alignment_matrix, 'r') as f:
-                        a_matrix = np_from_json(f.read())
-                        log.INFO("Aligning shots to %s" % a_matrix)
-
-                shots = get_geojson_shots_from_opensfm(tree.opensfm_reconstruction, utm_srs=reconstruction.get_proj_srs(), utm_offset=reconstruction.georef.utm_offset(), a_matrix=a_matrix)
+                contract = outputs.get("coordinate_contract")
+                topocentric_reconstruction = tree.opensfm_topocentric_reconstruction
+                if contract is None or not io.file_exists(topocentric_reconstruction):
+                    raise CoordinateContractError(
+                        "canonical topocentric reconstruction or coordinate contract is missing; rerun from reconstruction",
+                        artifact=shots_geojson,
+                        operation="export exact camera report",
+                    )
+                shots = get_geojson_shots_from_opensfm(
+                    topocentric_reconstruction,
+                    coordinate_contract=contract,
+                )
             else:
                 # Pseudo geo
                 shots = get_geojson_shots_from_opensfm(tree.opensfm_reconstruction, pseudo_geotiff=tree.odm_orthophoto_tif)
@@ -128,8 +137,17 @@ class ODMReport(types.ODM_Stage):
                 odm_stats['odm_processing_statistics'] = {
                     'total_time': total_time,
                     'total_time_human': hms(total_time),
-                    'average_gsd': gsd.opensfm_reconstruction_average_gsd(octx.recon_file(), use_all_shots=reconstruction.has_gcp()),
+                    'average_gsd': gsd.opensfm_reconstruction_average_gsd(
+                        canonical_reconstruction_path(
+                            tree, reconstruction.is_georeferenced()
+                        ),
+                        use_all_shots=reconstruction.has_gcp(),
+                    ),
                 }
+                if reconstruction.is_georeferenced():
+                    odm_stats['coordinate_contract'] = coordinate_contract_metadata(
+                        outputs["coordinate_contract"]
+                    )
 
                 # Add CODEM stats
                 if os.path.exists(codem_stats_json):

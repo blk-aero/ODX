@@ -1,0 +1,1 @@
+"""Georeferencing acceptance tools."""
