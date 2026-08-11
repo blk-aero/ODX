@@ -2451,7 +2451,8 @@ class TestCoordinateContract(unittest.TestCase):
             os.makedirs(tree.odm_texturing)
             os.makedirs(tree.odm_georeferencing)
             public = os.path.join(tree.odm_texturing, tree.odm_textured_model_obj)
-            open(public, "w").close()
+            with open(public, "w") as mesh:
+                mesh.write("# no vertices or faces\n")
             contract = resolve_coordinate_contract(self.anchor, self.controls([(0.0, 0.0, 0.0)]))
             contract.persist(os.path.join(tree.odm_georeferencing, "coordinate_contract.json"))
             args = SimpleNamespace(

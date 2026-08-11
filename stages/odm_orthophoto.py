@@ -31,6 +31,21 @@ def _file_sha256(path):
     return digest.hexdigest()
 
 
+def _mesh_has_geometry(path):
+    vertices = False
+    faces = False
+    with open(path, encoding="utf-8", errors="replace") as source:
+        for line in source:
+            fields = line.split()
+            if not fields:
+                continue
+            vertices = vertices or fields[0] == "v" and len(fields) >= 4
+            faces = faces or fields[0] == "f" and len(fields) >= 4
+            if vertices and faces:
+                return True
+    return False
+
+
 class ODMOrthoPhotoStage(types.ODM_Stage):
     def process(self, args, outputs):
         tree = outputs['tree']
@@ -142,7 +157,7 @@ class ODMOrthoPhotoStage(types.ODM_Stage):
                     )
                 missing_models = [
                     model for model in models
-                    if not io.file_exists(model) or os.path.getsize(model) == 0
+                    if not io.file_exists(model) or not _mesh_has_geometry(model)
                 ]
                 if missing_models:
                     raise CoordinateContractError(
