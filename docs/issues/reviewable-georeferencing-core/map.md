@@ -23,11 +23,11 @@ orthophoto rendering with clear preconditions.
 
 <!-- Closed tickets appear here as one-line linked gists. -->
 - [Ticket 01: minimum coordinate contract](issues/01-minimum-coordinate-contract.md) — use an immutable ENU-to-automatic-UTM/UPS contract; defer alignment, split/merge, and secondary artifacts.
-- [Ticket 02: `--align` boundary](issues/02-align-boundary.md) — preserve stock alignment until direct exports are integrated, then reject `--align` at direct-export entry rather than add partial post-CRS alignment.
-- [Ticket 03: split/merge boundary](issues/03-split-merge-boundary.md) — retain stock split/merge until direct integration; then reject georeferenced submodels at direct-export entry before contracts or artifacts, deferring output selection and merge validation.
-- [Ticket 04: secondary-artifact boundary](issues/04-secondary-artifact-boundary.md) — retain stock secondary consumers through the late affine reconstruction view; point/mesh are exact, orthophoto is direct, and boundary selection is deferred with a fail-closed guard.
-- [Ticket 07: direct-export integration](issues/07-integrate-direct-exports.md) — persist the existing GCP/GPS vertical state, transform OBJ normals locally, and require valid canonical geometry before late affine compatibility publication.
-- [Ticket 05: minimum behavioural evidence](issues/05-minimum-behavioural-evidence.md) — retain nine behavioural checks for exact extent, contract reload/failure, vertical controls, direct geometry, entry guards, and direct-orthophoto prerequisites.
+- [Ticket 02: `--align` boundary](issues/02-align-boundary.md) — keep alignment on the stock path; do not add post-CRS alignment state to the focused contract.
+- [Ticket 03: split/merge boundary](issues/03-split-merge-boundary.md) — keep georeferenced split submodels on the stock split/merge path; defer output selection and merge validation.
+- [Ticket 04: secondary-artifact boundary](issues/04-secondary-artifact-boundary.md) — retain stock secondary consumers through the late affine reconstruction view; exact point/mesh and direct orthophoto are best effort, and boundary options stay stock.
+- [Ticket 07: direct-export integration](issues/07-integrate-direct-exports.md) — persist the existing GCP/GPS vertical state, transform OBJ normals locally, and use exact canonical geometry when available before late affine compatibility publication.
+- [Ticket 05: minimum behavioural evidence](issues/05-minimum-behavioural-evidence.md) — retain seven behavioural checks for exact extent, contract reload/failure, vertical controls, stock options, direct geometry, and direct orthophoto rendering.
 - [Ticket 06: reviewable commit series](issues/06-reviewable-commit-series.md) — retain the independently compiling contract, decision, integration, correction, and evidence commits; exclude broad-PR subsystems and workflow deletion.
 
 ## Not yet specified

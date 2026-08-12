@@ -42,10 +42,16 @@ compiling code boundaries and makes the scope reductions reviewable:
    georeferencing correctness`). The first is the direct runtime seam; the
    next two remove simulated coverage and retain the specific automatic-CRS
    and validation cases. The correction makes the vertical state live,
-   transforms OBJ normals correctly, and fails closed on a missing canonical
-   mesh without widening the seam.
+   transforms OBJ normals correctly.
 
-`144cddf`, `ccc34b9`, `a7ec757`, `711465b`, and `ce422dc` each compile at
+4. Read `2bb67ca` (`Cover direct vertical controls`), `f48505f` (`Allow stock
+   georeferencing options`), and `edf11e2` (`Keep aligned and split jobs
+   stock`) for the final lean policy: exact adapters are best effort, while
+   alignment, boundaries, auto-boundaries, and split jobs remain available on
+   their stock paths.
+
+`144cddf`, `ccc34b9`, `a7ec757`, `711465b`, `ce422dc`, `f48505f`, and
+`edf11e2` each compile at
 their own commit after their already-introduced dependencies. The intervening
 boundary commits are docs-only. Rewriting would not repair a build or scope
 boundary; it would only hide the intentional evidence reduction and its
@@ -56,20 +62,20 @@ the unused GDAL exact-raster warp and its tests; benchmark/release tooling;
 the split/merge output-selection and derivative-manifest protocol; a full
 post-CRS alignment system; and contract-aware reports, bounds, tiles, DEMs,
 and other secondary artifacts. The retained direct orthophoto renders the
-validated public mesh and contract, not a raster coordinate warp. Alignment,
-boundaries, and georeferenced split submodels instead fail closed at the
-direct entry; stock secondary consumers retain their compatibility path. The
+public mesh and contract when those exact inputs are available, not a raster
+coordinate warp; otherwise it keeps the stock renderer path. Alignment,
+boundaries, auto-boundaries, and georeferenced split submodels stay on stock
+behavior, while stock secondary consumers retain their compatibility path. The
 reference branch's separate removal of repository GitHub workflows is unrelated
 to georeferencing and is not in this series.
 
-## Validation limitation
+## Validation
 
-Static compilation passed for every code-bearing commit. A temporary pinned
-environment ran the two contract tests and six native-independent direct
-tests; the real LAZ test skips explicitly because host PDAL Python bindings
-are absent. The available Docker CLI also has no running daemon, so the
-project container could not supply those bindings. The real LAZ check must
-still run in that project container.
+Static compilation passed for every code-bearing commit. In the GPU project
+container, the focused suite passed with two contract tests and five direct
+tests, including real PDAL LAZ serialization/decoding. The full suite was
+21/22: the only failure is the pre-existing JPEG-XL metadata test
+(`test_photo.TestPhoto.test_jpeg_xl`), reproduced unchanged against master.
 
 ## Answer
 

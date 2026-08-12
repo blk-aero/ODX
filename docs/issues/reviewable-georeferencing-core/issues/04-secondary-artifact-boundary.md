@@ -23,23 +23,18 @@ without carrying broad report, boundary, tile, and provenance integration.
   consumers on their stock paths. It adds no coordinate-contract tags,
   report fields, derivative manifests, raster evidence, or compatibility
   provenance for them.
-- For a direct georeferenced job, the canonical reconstruction remains the
-  source for geometry work and direct exports. Only after those core exports
-  may Ticket 07 invoke stock OpenSfM geocoordinates export to restore its
-  existing affine compatibility reconstruction at the active path for later
-  stock consumers. A rerun restores the canonical copy first; it never
-  projects the prior compatibility view.
-- Ticket 07 rejects a direct georeferenced job using `--boundary` or
-  `--auto-boundary` before it resolves or persists a contract or publishes a
-  direct public artifact. The current offset-only boundary conversion cannot
-  safely select canonical geometry. `--crop` and ordinary secondary options
-  otherwise retain their stock behavior.
-- Missing or incompatible core inputs fail only at the core boundary: a
-  direct export cannot use a missing canonical reconstruction or contract,
-  cannot publish a topocentric working mesh as public geometry, and cannot
-  invoke the direct orthophoto renderer without a valid contract and nonempty,
-  compatible public mesh. Secondary products retain their existing optional
-  warning/continuation behavior.
+- For an ordinary direct georeferenced job, the canonical reconstruction is
+  used when the contract and exact adapters are available. The stock affine
+  reconstruction is still published for later consumers; if an exact adapter
+  is unavailable, the stage logs a warning and continues with the stock
+  export path.
+- `--boundary` and `--auto-boundary` remain available. Their filtering keeps
+  the stock offset-based behavior; the focused core does not add boundary
+  inversion or reject the job. `--crop` and other secondary options likewise
+  retain their stock behavior.
+- Missing or incompatible exact inputs are best-effort conditions, not new
+  pipeline-wide guards. The direct adapter falls back to the stock point,
+  mesh, reconstruction, or orthophoto path where possible.
 
 ## Answer
 
@@ -50,13 +45,12 @@ their usual files, but this change neither proves nor labels them as exact.
 
 The one compatibility adapter worth retaining is the existing reconstruction
 path: snapshot `reconstruction.topocentric.json` after reconstruction, keep it
-authoritative through geometry work, and late-publish stock OpenSfM's affine
-view at `reconstruction.json`. Restore the canonical file before any later
-OpenSfM action or fail with an instruction to rerun from reconstruction. Do
-not add a compatibility-provenance file.
+authoritative through geometry work when present, and late-publish stock
+OpenSfM's affine view at `reconstruction.json`. Restore the canonical file
+before any later OpenSfM action when the snapshot exists; otherwise retain the
+stock path. Do not add a compatibility-provenance file.
 
-`--boundary` and `--auto-boundary` are the narrow fail-closed exception. They
-feed the pre-export filter through an affine offset conversion, so accepting
-them on a direct job would make a selected direct artifact appear to honor an
-output-CRS boundary when it cannot. Exact boundary inversion and all secondary
-artifact integration are deferred.
+`--boundary` and `--auto-boundary` stay vanilla. They feed the existing
+pre-export filter through its affine offset conversion, and the focused core
+does not claim to improve selected-area accuracy for those options. Exact
+boundary inversion and all secondary-artifact integration remain deferred.

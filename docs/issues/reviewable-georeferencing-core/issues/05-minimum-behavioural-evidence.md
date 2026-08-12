@@ -24,16 +24,15 @@ do not observe retained production seams.
 - Real PDAL in the project container writes and decodes exact public LAZ
   coordinates; the mesh export writes exact XY-local vertices while retaining
   its OBJ material, UV, and face structure.
-- The direct stage rejects `--align`, `--boundary`, `--auto-boundary`, and
-  georeferenced split submodels before a contract or direct public artifact
-  appears; it also persists the vertical state exposed by the selected GCP or
-  GPS controls and preserves relative Z when that state is unreferenced.
-- Missing or invalid requested canonical textured meshes fail the direct stage
-  before stock compatibility reconstruction, even when orthophoto output is
-  skipped.
-- Direct orthophoto rendering rejects missing, invalid, incompatible, or
-  geometry-free contract/mesh inputs before invoking the renderer, and invokes
-  the renderer with the persisted contract and public mesh when valid.
+- The direct stage keeps `--align`, `--boundary`, `--auto-boundary`, and
+  georeferenced split submodels on stock behavior; ordinary jobs persist the
+  vertical state exposed by the selected GCP or GPS controls and preserve
+  relative Z when that state is unreferenced.
+- Exact point, mesh, and orthophoto adapters are best effort. Missing or
+  invalid exact inputs log a warning and leave the stock export path available.
+- When the direct prerequisites are available, orthophoto rendering uses the
+  persisted contract and public mesh; otherwise it uses the stock
+  reconstruction/georeferencing inputs.
 - The suite contains no source-text checks, test-running-test orchestration,
   fake cross-artifact lineage, or replacement coordinate math.
 
@@ -41,14 +40,14 @@ do not observe retained production seams.
 
 `tests/test_georeferencing.py` now contains the exact-extent, automatic
 UTM/UPS selection, validation, and persisted-contract checks.
-`tests/test_direct_georeferencing.py` contains the direct entry guard,
-vertical selection, required canonical mesh failure, real-PDAL LAZ, exact
-visual mesh and normals, and direct-orthophoto tests. The LAZ test skips
-explicitly when PDAL's Python bindings are unavailable; the project container
-remains the normal execution environment.
+`tests/test_direct_georeferencing.py` contains the stock-option matrix,
+vertical selection, real-PDAL LAZ, exact visual mesh and normals, and direct
+orthophoto tests. The LAZ test skips explicitly when PDAL's Python bindings
+are unavailable outside the project container.
 
 ## Answer
 
-Nine focused tests cover the retained core only. They replace duplicate
-stage-contract checks, the fake PDAL stream, and simulated
-compatibility-publication lifecycle coverage.
+Seven focused tests cover the retained core only: two contract tests and five
+direct-export tests. They replace duplicate stage-contract checks, the fake
+PDAL stream, simulated compatibility-publication lifecycle coverage, and
+fail-closed option tests that no longer describe the vanilla stock path.

@@ -19,26 +19,19 @@ Do not retain output-selection manifests, shared-observation derivatives, or
 merge validation. Until Ticket 07 selects direct exports, the stock split path
 remains unchanged.
 
-When Ticket 07 selects a direct export for a georeferenced reconstruction,
-reject a submodel at the first direct-path entry in
-`ODMGeoreferencingStage.process` when
-`reconstruction.is_georeferenced() and is_submodel(tree.opensfm)`. The guard
-must fail clearly before resolving or persisting a coordinate contract or
-publishing a direct artifact. `is_submodel` is the real signal: child commands
-remove `--split`, so `outputs["large"]` is false in each submodel process.
-This leaves ordinary single-project jobs and the pre-integration stock split
-path alone, while ensuring the parent never merges independently anchored
-direct outputs.
+When Ticket 07 reaches a georeferenced submodel, keep the stock split path.
+Submodels do not select the focused direct contract, and stock geocoordinate
+export keeps the active reconstruction compatible with the existing merge
+flow. `is_submodel` is the real signal: child commands remove `--split`, so
+`outputs["large"]` is false in each submodel process.
 
 ## Acceptance criteria
 
 - Before Ticket 07, stock split/merge behavior remains unchanged; no direct
   guard is added now.
-- Ticket 07 raises a clear `system.ExitException` before contract resolution
-  or direct artifact publication when
-  `reconstruction.is_georeferenced() and is_submodel(tree.opensfm)`.
-- The rejection creates no output-selection manifest, shared-observation or
-  derivative manifest, direct contract, or direct public artifact, and the
-  parent merge does not combine local frames.
+- Ticket 07 leaves georeferenced submodels on the stock path and does not
+  resolve a direct contract for them.
+- No output-selection, shared-observation, or derivative manifest is added;
+  the existing parent merge remains responsible for split outputs.
 - Output-selection propagation and merge validation are deferred to a
   separately scoped split/merge change.
