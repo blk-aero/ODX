@@ -28,6 +28,7 @@ orthophoto rendering with clear preconditions.
 - [Ticket 04: secondary-artifact boundary](issues/04-secondary-artifact-boundary.md) — retain stock secondary consumers through the late affine reconstruction view; point/mesh are exact, orthophoto is direct, and boundary selection is deferred with a fail-closed guard.
 - [Ticket 07: direct-export integration](issues/07-integrate-direct-exports.md) — preserve canonical geometry through exact LAZ/mesh export, late-publish stock affine compatibility, and render orthophotos only from validated direct inputs.
 - [Ticket 05: minimum behavioural evidence](issues/05-minimum-behavioural-evidence.md) — retain seven behavioural checks for exact extent, contract reload/failure, direct geometry, entry guards, and direct-orthophoto prerequisites.
+- [Ticket 06: reviewable commit series](issues/06-reviewable-commit-series.md) — retain the independently compiling contract, decision, integration, and evidence commits; exclude broad-PR subsystems and workflow deletion.
 
 ## Not yet specified
 
