@@ -27,7 +27,7 @@ from opendm.georeferencing import (
     resolve_stage_coordinate_contract,
 )
 from opendm.multispectral import get_photos_by_band, get_primary_band_name
-from opendm.osfm import OSFMContext
+from opendm.osfm import OSFMContext, is_submodel
 from opendm.boundary import as_polygon, export_to_bounds_files
 from opendm.align import compute_alignment_matrix, transform_point_cloud, transform_obj
 from opendm.utils import np_to_json
@@ -63,7 +63,9 @@ class ODMGeoreferencingStage(types.ODM_Stage):
         coordinate_contract_path = tree.path(
             "odm_georeferencing", "coordinate_contract.json"
         )
-        if reconstruction.is_georeferenced():
+        if reconstruction.is_georeferenced() and (
+            tree.odm_align_file is None and not is_submodel(tree.opensfm)
+        ):
             try:
                 materialize_canonical_reconstruction(
                     tree.opensfm_reconstruction,
@@ -419,7 +421,7 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                 )
             except Exception as error:
                 log.WARNING("Could not publish stock reconstruction compatibility: %s" % error)
-        elif reconstruction.is_georeferenced():
+        elif reconstruction.is_georeferenced() and not outputs.get("stock_georeferenced_reconstruction"):
             octx = OSFMContext(tree.opensfm)
             try:
                 octx.run(

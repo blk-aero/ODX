@@ -27,6 +27,12 @@ class GeoreferencedReconstruction:
         self.photos = photos or [SimpleNamespace(band_name="RGB", altitude=100.0)]
         self.offset = offset
         self.gcp = gcp
+        self.georef = SimpleNamespace(
+            utm_offset=lambda: offset,
+            utm_east_offset=offset[0],
+            utm_north_offset=offset[1],
+            proj4=lambda: "EPSG:32723",
+        )
 
     @staticmethod
     def is_georeferenced():
@@ -162,11 +168,13 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                 root = os.path.join(directory, "submodel_0000") if case == "submodel" else directory
                 tree = types.ODM_Tree(root)
                 public_mesh = prepare_stage_files(tree)
+                write_triangle(public_mesh)
                 args = stage_args(auto_boundary=case == "auto_boundary")
                 outputs = {
                     "tree": tree,
                     "reconstruction": GeoreferencedReconstruction(),
                     "fresh_reconstruction": True,
+                    "stock_georeferenced_reconstruction": case in ("align", "submodel"),
                 }
                 if case == "align":
                     tree.odm_align_file = os.path.join(root, "align.laz")
@@ -184,6 +192,8 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                     "stages.odm_georeferencing.compute_alignment_matrix", return_value=None
                 ), mock.patch(
                     "stages.odm_georeferencing.export_to_bounds_files"
+                ), mock.patch(
+                    "stages.odm_georeferencing.system.run"
                 ):
                     ODMGeoreferencingStage("odm_georeferencing", args).process(
                         args, outputs

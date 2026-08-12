@@ -11,7 +11,7 @@ from opendm import gsd
 from opendm import point_cloud
 from opendm import types
 from opendm.utils import get_depthmap_resolution
-from opendm.osfm import OSFMContext
+from opendm.osfm import OSFMContext, is_submodel
 from opendm import multispectral
 from opendm import thermal
 from opendm import nvm
@@ -44,6 +44,13 @@ class ODMOpenSfMStage(types.ODM_Stage):
         ):
             shutil.copyfile(tree.opensfm_reconstruction, tree.opensfm_topocentric_reconstruction)
             outputs["fresh_reconstruction"] = True
+        if reconstruction.is_georeferenced() and (
+            tree.odm_align_file is not None or is_submodel(tree.opensfm)
+        ):
+            octx.run('export_geocoords --reconstruction --proj "%s" --offset-x %s --offset-y %s' %
+                (reconstruction.georef.proj4(), reconstruction.georef.utm_east_offset, reconstruction.georef.utm_north_offset))
+            shutil.move(tree.opensfm_geocoords_reconstruction, tree.opensfm_reconstruction)
+            outputs["stock_georeferenced_reconstruction"] = True
         octx.extract_cameras(tree.path("cameras.json"), self.rerun())
         self.update_progress(70)
 
