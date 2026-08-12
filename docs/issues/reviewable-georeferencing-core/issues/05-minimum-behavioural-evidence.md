@@ -15,9 +15,12 @@ do not observe retained production seams.
 ## Acceptance criteria
 
 - A long ENU extent is compared with an independently evaluated PROJ
-  transformation, so a scene-wide affine approximation cannot pass.
-- A persisted coordinate contract reloads unchanged, while missing or
-  changed manifests fail with the instruction to rerun from reconstruction.
+  transformation, so a scene-wide affine approximation cannot pass; the same
+  check covers automatic UTM plus north/south UPS selection and rejects
+  non-finite and out-of-area coordinates.
+- A persisted coordinate contract reloads unchanged, preserving its
+  unreferenced vertical state and relative Z; missing or changed manifests
+  fail with the instruction to rerun from reconstruction.
 - Real PDAL in the project container writes and decodes exact public LAZ
   coordinates; the mesh export writes exact XY-local vertices while retaining
   its OBJ material, UV, and face structure.
@@ -32,14 +35,15 @@ do not observe retained production seams.
 
 ## Outcome
 
-`tests/test_georeferencing.py` now contains the exact-extent and persisted
-contract checks. `tests/test_direct_georeferencing.py` contains the direct
-entry guard, real-PDAL LAZ, exact visual mesh, and direct-orthophoto tests.
-The LAZ test skips explicitly when PDAL's Python bindings are unavailable;
-the project container remains the normal execution environment.
+`tests/test_georeferencing.py` now contains the exact-extent, automatic
+UTM/UPS selection, validation, and persisted-contract checks.
+`tests/test_direct_georeferencing.py` contains the direct entry guard,
+real-PDAL LAZ, exact visual mesh, and direct-orthophoto tests. The LAZ test
+skips explicitly when PDAL's Python bindings are unavailable; the project
+container remains the normal execution environment.
 
 ## Answer
 
 Seven focused tests cover the retained core only. They replace duplicate
-contract checks, automatic-CRS and input-validation unit cases, the fake PDAL
-stream, and simulated compatibility-publication lifecycle coverage.
+stage-contract checks, the fake PDAL stream, and simulated
+compatibility-publication lifecycle coverage.

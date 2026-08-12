@@ -7,8 +7,10 @@ import numpy as np
 from pyproj import CRS, Transformer
 
 from opendm.georeferencing import (
+    CoordinateContractError,
     ManifestError,
     TopocentricAnchor,
+    VerticalReference,
     load_coordinate_contract,
     resolve_coordinate_contract,
 )
@@ -37,17 +39,39 @@ class TestCoordinateContract(unittest.TestCase):
         np.testing.assert_allclose(
             contract.transform_points(points), expected, atol=0.0001, rtol=0.0
         )
+        self.assertEqual(contract.output_crs.to_epsg(), 32723)
+        self.assertEqual(
+            resolve_coordinate_contract(TopocentricAnchor(85.0, 10.0, 12.0))
+            .output_crs.to_epsg(),
+            5041,
+        )
+        self.assertEqual(
+            resolve_coordinate_contract(TopocentricAnchor(-81.0, 10.0, 12.0))
+            .output_crs.to_epsg(),
+            5042,
+        )
+        for point in ((float("nan"), 0.0, 0.0), (700000.0, 0.0, 0.0)):
+            with self.subTest(point=point):
+                with self.assertRaises(CoordinateContractError):
+                    contract.transform_points([point])
 
     def test_reloads_or_rejects_the_persisted_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "coordinate_contract.json")
-            contract = resolve_coordinate_contract(self.anchor)
+            contract = resolve_coordinate_contract(
+                self.anchor, vertical_reference=VerticalReference.UNREFERENCED
+            )
 
             with self.assertRaisesRegex(ManifestError, "rerun from reconstruction"):
                 load_coordinate_contract(path)
 
             contract.persist(path)
-            self.assertEqual(load_coordinate_contract(path), contract)
+            loaded = load_coordinate_contract(path)
+            self.assertEqual(loaded, contract)
+            self.assertEqual(loaded.vertical_reference, VerticalReference.UNREFERENCED)
+            self.assertEqual(
+                loaded.transform_points([(1000.0, 2000.0, 25.0)])[0, 2], 25.0
+            )
 
             with open(path) as manifest:
                 payload = json.load(manifest)
