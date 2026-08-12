@@ -1,4 +1,5 @@
 import os
+import math
 import shutil
 import struct
 import pipes
@@ -18,17 +19,42 @@ from opendm import location
 from opendm.cropper import Cropper
 from opendm import point_cloud
 from opendm.georeferencing import (
+    MeshExportError,
+    VerticalReference,
     export_georeferenced_mesh,
     export_georeferenced_point_cloud,
     materialize_canonical_reconstruction,
     publish_legacy_reconstruction_compatibility,
     resolve_stage_coordinate_contract,
 )
-from opendm.multispectral import get_primary_band_name
+from opendm.multispectral import get_photos_by_band, get_primary_band_name
 from opendm.osfm import OSFMContext, is_submodel
 from opendm.boundary import as_polygon, export_to_bounds_files
 from opendm.align import compute_alignment_matrix, transform_point_cloud, transform_obj
 from opendm.utils import np_to_json
+
+
+def _vertical_reference(reconstruction, args):
+    has_gcp = reconstruction.has_gcp()
+    if has_gcp and any(
+        not entry.is_checkpoint() and not math.isnan(entry.z)
+        for entry in reconstruction.gcp.iter_entries()
+    ):
+        return VerticalReference.WGS84_ELLIPSOIDAL
+
+    if not has_gcp or getattr(args, "force_gps", False):
+        photos = (
+            get_photos_by_band(reconstruction.multi_camera, args.primary_band)
+            if reconstruction.multi_camera
+            else reconstruction.photos
+        )
+        if photos and all(photo.altitude is not None for photo in photos):
+            zero_altitudes = sum(photo.altitude == 0 for photo in photos)
+            if zero_altitudes / len(photos) <= 0.05:
+                return VerticalReference.WGS84_ELLIPSOIDAL
+
+    return VerticalReference.UNREFERENCED
+
 
 class ODMGeoreferencingStage(types.ODM_Stage):
     def process(self, args, outputs):
@@ -64,23 +90,32 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                 tree.path("opensfm", "reference_lla.json"),
                 reconstruction.get_proj_offset(),
                 fresh_reconstruction=bool(outputs.get("fresh_reconstruction")),
+                vertical_reference=_vertical_reference(reconstruction, args),
             )
 
         def textured_model_paths():
-            for texturing in (tree.odm_texturing, tree.odm_25dtexturing):
-                if reconstruction.multi_camera:
-                    primary = get_primary_band_name(
-                        reconstruction.multi_camera, args.primary_band
-                    )
-                    subdirectories = [
-                        "" if band['name'] == primary else band['name'].lower()
-                        for band in reconstruction.multi_camera
-                    ]
-                else:
-                    subdirectories = [""]
-                for subdirectory in subdirectories:
+            if reconstruction.multi_camera:
+                primary = get_primary_band_name(
+                    reconstruction.multi_camera, args.primary_band
+                )
+                bands = [
+                    (band['name'] == primary, band['name'].lower())
+                    for band in reconstruction.multi_camera
+                ]
+            else:
+                bands = [(True, "")]
+            for is_primary, subdirectory in bands:
+                if not args.skip_3dmodel and (is_primary or args.use_3dmesh):
                     yield os.path.join(
-                        texturing, subdirectory, tree.odm_textured_model_obj
+                        tree.odm_texturing,
+                        subdirectory,
+                        tree.odm_textured_model_obj,
+                    )
+                if not args.use_3dmesh:
+                    yield os.path.join(
+                        tree.odm_25dtexturing,
+                        subdirectory,
+                        tree.odm_textured_model_obj,
                     )
 
         # Export GCP information if available
@@ -335,7 +370,13 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                 topocentric_obj = io.related_file_path(
                     public_obj, postfix="_topocentric"
                 )
-                if os.path.isfile(topocentric_obj):
+                try:
+                    if not os.path.isfile(topocentric_obj):
+                        raise MeshExportError(
+                            "canonical topocentric mesh is missing; rerun from mvs_texturing",
+                            artifact=public_obj,
+                            operation="select canonical mesh",
+                        )
                     result = export_georeferenced_mesh(
                         topocentric_obj,
                         public_obj,
@@ -345,12 +386,10 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                         "Exported exact textured mesh %s (%s vertices, %s faces)"
                         % (public_obj, result.vertex_count, result.face_count)
                     )
-                elif os.path.isfile(public_obj):
-                    os.unlink(public_obj)
-                    log.WARNING(
-                        "Cannot publish textured model because its canonical topocentric "
-                        "copy is missing; rerun from mvs_texturing: %s" % public_obj
-                    )
+                except MeshExportError:
+                    if os.path.isfile(public_obj):
+                        os.unlink(public_obj)
+                    raise
 
             contract = outputs["coordinate_contract"]
             octx = OSFMContext(tree.opensfm)

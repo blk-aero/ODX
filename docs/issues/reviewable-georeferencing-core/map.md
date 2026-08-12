@@ -26,7 +26,7 @@ orthophoto rendering with clear preconditions.
 - [Ticket 02: `--align` boundary](issues/02-align-boundary.md) — preserve stock alignment until direct exports are integrated, then reject `--align` at direct-export entry rather than add partial post-CRS alignment.
 - [Ticket 03: split/merge boundary](issues/03-split-merge-boundary.md) — retain stock split/merge until direct integration; then reject georeferenced submodels at direct-export entry before contracts or artifacts, deferring output selection and merge validation.
 - [Ticket 04: secondary-artifact boundary](issues/04-secondary-artifact-boundary.md) — retain stock secondary consumers through the late affine reconstruction view; point/mesh are exact, orthophoto is direct, and boundary selection is deferred with a fail-closed guard.
-- [Ticket 07: direct-export integration](issues/07-integrate-direct-exports.md) — preserve canonical geometry through exact LAZ/mesh export, late-publish stock affine compatibility, and render orthophotos only from validated direct inputs.
+- [Ticket 07: direct-export integration](issues/07-integrate-direct-exports.md) — persist the existing GCP/GPS vertical state, transform OBJ normals locally, and require valid canonical geometry before late affine compatibility publication.
 - [Ticket 05: minimum behavioural evidence](issues/05-minimum-behavioural-evidence.md) — retain seven behavioural checks for exact extent, contract reload/failure, direct geometry, entry guards, and direct-orthophoto prerequisites.
 - [Ticket 06: reviewable commit series](issues/06-reviewable-commit-series.md) — retain the independently compiling contract, decision, integration, and evidence commits; exclude broad-PR subsystems and workflow deletion.
 

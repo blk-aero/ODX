@@ -359,7 +359,7 @@ def resolve_stage_coordinate_contract(
     storage_offset: Sequence[float],
     *,
     fresh_reconstruction: bool = False,
-    vertical_reference: VerticalReference = VerticalReference.WGS84_ELLIPSOIDAL,
+    vertical_reference: VerticalReference,
 ) -> CoordinateContract:
     """Create a fresh contract or reload the exact persisted contract."""
     expected = resolve_coordinate_contract(
@@ -623,6 +623,70 @@ def export_georeferenced_point_cloud(
                 pass
 
 
+def _obj_index(value: str, count: int, kind: str) -> int:
+    try:
+        index = int(value)
+    except ValueError as error:
+        raise MeshExportError(
+            "invalid OBJ {} index".format(kind),
+            artifact="georeferenced mesh",
+            operation="parse OBJ",
+            cause=error,
+        ) from error
+    resolved = index - 1 if index > 0 else count + index
+    if index == 0 or resolved < 0 or resolved >= count:
+        raise MeshExportError(
+            "OBJ {} index is out of range".format(kind),
+            artifact="georeferenced mesh",
+            operation="parse OBJ",
+        )
+    return resolved
+
+
+def _transform_normals(
+    contract: CoordinateContract,
+    coordinates: Iterable[Sequence[float]],
+    normals: Iterable[Sequence[float]],
+) -> np.ndarray:
+    points = _as_points(coordinates, "normal transformation")
+    vectors = _as_points(normals, "normal transformation")
+    if len(points) != len(vectors):
+        raise CoordinateContractError(
+            "point and normal counts differ", operation="normal transformation"
+        )
+    epsilon = 0.001
+    offsets = np.eye(3) * epsilon
+    plus = np.concatenate([points + offset for offset in offsets])
+    minus = np.concatenate([points - offset for offset in offsets])
+    differences = (
+        contract.transform_points(plus) - contract.transform_points(minus)
+    ) / (2.0 * epsilon)
+    count = len(points)
+    jacobians = np.stack(
+        [differences[index * count : (index + 1) * count] for index in range(3)],
+        axis=2,
+    )
+    try:
+        transformed = np.linalg.solve(
+            np.swapaxes(jacobians, 1, 2), vectors[..., np.newaxis]
+        )[..., 0]
+    except Exception as error:
+        raise CoordinateContractError(
+            "normal transformation failed",
+            operation="normal transformation",
+            coordinate=points[0],
+            cause=error,
+        ) from error
+    lengths = np.linalg.norm(transformed, axis=1)
+    if not np.all(np.isfinite(transformed)) or np.any(lengths == 0.0):
+        raise CoordinateContractError(
+            "invalid transformed normal",
+            operation="normal transformation",
+            coordinate=points[0],
+        )
+    return transformed / lengths[:, None]
+
+
 def export_georeferenced_mesh(
     source_path: str, output_path: str, contract: CoordinateContract
 ) -> MeshExportResult:
@@ -638,6 +702,15 @@ def export_georeferenced_mesh(
                 if line.startswith("v ")
             ]
         )
+        normals = np.asarray(
+            [
+                [float(value) for value in line.split()[1:4]]
+                for line in lines
+                if line.startswith("vn ")
+            ]
+        )
+        if normals.size == 0:
+            normals = np.empty((0, 3), dtype=np.float64)
         face_count = sum(line.startswith("f ") for line in lines)
         if len(vertices) == 0 or face_count == 0:
             raise MeshExportError(
@@ -648,6 +721,46 @@ def export_georeferenced_mesh(
         transformed = contract.transform_points(
             vertices, apply_storage_offset=True
         )
+
+        normal_pairs = {}
+        parsed_faces = {}
+        for line_index, line in enumerate(lines):
+            if not line.startswith("f "):
+                continue
+            parsed = []
+            for token in line.split()[1:]:
+                fields = token.split("/")
+                vertex_index = _obj_index(fields[0], len(vertices), "vertex")
+                normal_index = None
+                if len(fields) >= 3 and fields[2]:
+                    normal_index = _obj_index(fields[2], len(normals), "normal")
+                    pair = (normal_index, vertex_index)
+                    if pair not in normal_pairs:
+                        normal_pairs[pair] = len(normal_pairs) + 1
+                parsed.append((fields, vertex_index, normal_index))
+            parsed_faces[line_index] = parsed
+
+        pairs = list(normal_pairs)
+        if pairs:
+            transformed_normals = _transform_normals(
+                contract,
+                vertices[[vertex for _, vertex in pairs]],
+                normals[[normal for normal, _ in pairs]],
+            )
+        else:
+            transformed_normals = np.empty((0, 3), dtype=np.float64)
+
+        rewritten_faces = {}
+        for line_index, parsed in parsed_faces.items():
+            if not any(normal_index is not None for _, _, normal_index in parsed):
+                continue
+            tokens = []
+            for fields, vertex_index, normal_index in parsed:
+                if normal_index is not None:
+                    fields[2] = str(normal_pairs[(normal_index, vertex_index)])
+                tokens.append("/".join(fields))
+            rewritten_faces[line_index] = "f " + " ".join(tokens) + "\n"
+
         output_directory = os.path.dirname(output_path) or "."
         os.makedirs(output_directory, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
@@ -657,7 +770,8 @@ def export_georeferenced_mesh(
         )
         with os.fdopen(descriptor, "w") as output:
             vertex_index = 0
-            for line in lines:
+            emitted_normals = False
+            for line_index, line in enumerate(lines):
                 if line.startswith("v "):
                     output.write(
                         "v {:.17g} {:.17g} {:.17g}\n".format(
@@ -665,6 +779,15 @@ def export_georeferenced_mesh(
                         )
                     )
                     vertex_index += 1
+                elif line.startswith("vn "):
+                    if not emitted_normals:
+                        for normal in transformed_normals:
+                            output.write(
+                                "vn {:.17g} {:.17g} {:.17g}\n".format(*normal)
+                            )
+                        emitted_normals = True
+                elif line_index in rewritten_faces:
+                    output.write(rewritten_faces[line_index])
                 else:
                     output.write(line)
         os.replace(temporary, output_path)

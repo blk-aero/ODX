@@ -10,9 +10,12 @@ import numpy as np
 from opendm import system, types
 from opendm.georeferencing import (
     CoordinateContractError,
+    MeshExportError,
     TopocentricAnchor,
+    VerticalReference,
     export_georeferenced_mesh,
     export_georeferenced_point_cloud,
+    load_coordinate_contract,
     resolve_coordinate_contract,
 )
 from stages.odm_georeferencing import ODMGeoreferencingStage
@@ -20,20 +23,40 @@ from stages.odm_orthophoto import ODMOrthoPhotoStage
 
 
 class GeoreferencedReconstruction:
-    photos = [SimpleNamespace(band_name="RGB")]
     multi_camera = None
+
+    def __init__(self, photos=None, offset=(421000.0, 7433000.0), gcp=None):
+        self.photos = photos or [SimpleNamespace(band_name="RGB", altitude=100.0)]
+        self.offset = offset
+        self.gcp = gcp
 
     @staticmethod
     def is_georeferenced():
         return True
 
-    @staticmethod
-    def has_gcp():
-        return False
+    def has_gcp(self):
+        return self.gcp is not None and self.gcp.exists()
+
+    def get_proj_offset(self):
+        return self.offset
 
 
 def stage_args(**overrides):
-    values = {"auto_boundary": False, "boundary": None}
+    values = {
+        "auto_boundary": False,
+        "boundary": None,
+        "crop": 0,
+        "fast_orthophoto": False,
+        "force_gps": False,
+        "optimize_disk_space": False,
+        "primary_band": None,
+        "rerun": None,
+        "rerun_all": True,
+        "rerun_from": None,
+        "skip_3dmodel": False,
+        "skip_orthophoto": False,
+        "use_3dmesh": True,
+    }
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -65,6 +88,58 @@ def write_triangle(path):
             "usemtl atlas\n"
             "f 1/1 2/2 3/3\n"
         )
+
+
+def write_triangle_with_normals(path):
+    with open(path, "w") as mesh:
+        mesh.write(
+            "mtllib mesh.mtl\n"
+            "v 0 0 0\n"
+            "v 0 100 0\n"
+            "v 0 0 50\n"
+            "vt 0 0\nvt 1 0\nvt 0 1\n"
+            "vn 1 0 0\n"
+            "usemtl atlas\n"
+            "f 1/1/1 2/2/1 3/3/1\n"
+        )
+
+
+def write_reference(tree):
+    os.makedirs(tree.opensfm, exist_ok=True)
+    with open(tree.path("opensfm", "reference_lla.json"), "w") as reference:
+        json.dump(
+            {
+                "latitude": -23.206694678,
+                "longitude": -45.764977891,
+                "altitude": 0.0,
+            },
+            reference,
+        )
+
+
+def prepare_stage_files(tree, canonical_mesh=True):
+    for path in (
+        tree.odm_filterpoints,
+        tree.odm_georeferencing,
+        tree.odm_texturing,
+    ):
+        os.makedirs(path, exist_ok=True)
+    write_reference(tree)
+    for path in (
+        tree.opensfm_reconstruction,
+        tree.opensfm_topocentric_reconstruction,
+    ):
+        with open(path, "w") as reconstruction:
+            json.dump([{"frame": "topocentric"}], reconstruction)
+    public_mesh = os.path.join(tree.odm_texturing, tree.odm_textured_model_obj)
+    if canonical_mesh:
+        write_triangle(os.path.splitext(public_mesh)[0] + "_topocentric.obj")
+    return public_mesh
+
+
+def fake_point_export(_source, output, _contract, **_kwargs):
+    open(output, "wb").close()
+    return SimpleNamespace(point_count=1)
 
 
 def write_point_cloud(path):
@@ -115,6 +190,75 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                 )
                 self.assertFalse(os.path.exists(tree.odm_georeferencing_model_laz))
 
+    def test_persists_unreferenced_gps_state_and_preserves_relative_z(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = types.ODM_Tree(directory)
+            prepare_stage_files(tree)
+            reconstruction = GeoreferencedReconstruction(
+                photos=[SimpleNamespace(band_name="RGB", altitude=None)]
+            )
+            args = stage_args()
+            outputs = {
+                "tree": tree,
+                "reconstruction": reconstruction,
+                "fresh_reconstruction": True,
+            }
+
+            with mock.patch(
+                "stages.odm_georeferencing.export_georeferenced_point_cloud",
+                side_effect=fake_point_export,
+            ), mock.patch(
+                "stages.odm_georeferencing.point_cloud.post_point_cloud_steps"
+            ), mock.patch(
+                "stages.odm_georeferencing.publish_legacy_reconstruction_compatibility"
+            ):
+                ODMGeoreferencingStage("odm_georeferencing", args).process(
+                    args, outputs
+                )
+
+            contract = load_coordinate_contract(
+                tree.path("odm_georeferencing", "coordinate_contract.json")
+            )
+            self.assertEqual(
+                contract.vertical_reference, VerticalReference.UNREFERENCED
+            )
+            self.assertEqual(
+                contract.transform_points([(10.0, 20.0, 37.5)])[0, 2], 37.5
+            )
+
+    def test_invalid_canonical_mesh_fails_before_compatibility_when_ortho_skipped(self):
+        for case in ("missing", "invalid"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                tree = types.ODM_Tree(directory)
+                public_mesh = prepare_stage_files(tree, canonical_mesh=False)
+                write_triangle(public_mesh)
+                canonical_mesh = os.path.splitext(public_mesh)[0] + "_topocentric.obj"
+                if case == "invalid":
+                    with open(canonical_mesh, "w") as mesh:
+                        mesh.write("v 0 0 0\n")
+                args = stage_args(skip_orthophoto=True)
+                outputs = {
+                    "tree": tree,
+                    "reconstruction": GeoreferencedReconstruction(),
+                    "fresh_reconstruction": True,
+                }
+
+                with mock.patch(
+                    "stages.odm_georeferencing.export_georeferenced_point_cloud",
+                    side_effect=fake_point_export,
+                ), mock.patch(
+                    "stages.odm_georeferencing.point_cloud.post_point_cloud_steps"
+                ), mock.patch(
+                    "stages.odm_georeferencing.publish_legacy_reconstruction_compatibility"
+                ) as compatibility:
+                    with self.assertRaises(MeshExportError):
+                        ODMGeoreferencingStage(
+                            "odm_georeferencing", args
+                        ).process(args, outputs)
+
+                compatibility.assert_not_called()
+                self.assertFalse(os.path.exists(public_mesh))
+
 
 class TestDirectExports(unittest.TestCase):
     anchor = TopocentricAnchor(-23.206694678, -45.764977891, 0.0)
@@ -147,20 +291,26 @@ class TestDirectExports(unittest.TestCase):
             rtol=0.0,
         )
 
-    def test_writes_xy_local_mesh_without_changing_visual_structure(self):
+    def test_writes_xy_local_mesh_with_valid_normals_and_visual_structure(self):
         contract = resolve_coordinate_contract(
             self.anchor, storage_offset=(421000.0, 7433000.0)
         )
         with tempfile.TemporaryDirectory() as directory:
             source = os.path.join(directory, "canonical.obj")
             output = os.path.join(directory, "public.obj")
-            write_triangle(source)
-            with open(source) as mesh:
-                source_lines = mesh.readlines()
+            write_triangle_with_normals(source)
+            with open(os.path.join(directory, "mesh.mtl"), "w") as material:
+                material.write("newmtl atlas\nmap_Kd texture.jpg\n")
+            with open(os.path.join(directory, "texture.jpg"), "wb") as texture:
+                texture.write(b"texture-bytes")
 
             result = export_georeferenced_mesh(source, output, contract)
             with open(output) as mesh:
                 lines = mesh.readlines()
+            with open(os.path.join(directory, "mesh.mtl")) as material:
+                material_text = material.read()
+            with open(os.path.join(directory, "texture.jpg"), "rb") as texture:
+                texture_bytes = texture.read()
 
         vertices = np.asarray(
             [
@@ -169,20 +319,55 @@ class TestDirectExports(unittest.TestCase):
                 if line.startswith("v ")
             ]
         )
+        normals = np.asarray(
+            [
+                [float(value) for value in line.split()[1:4]]
+                for line in lines
+                if line.startswith("vn ")
+            ]
+        )
         self.assertEqual((result.vertex_count, result.face_count), (3, 1))
         np.testing.assert_allclose(
             vertices,
             contract.transform_points(
-                [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 20.0, 1.0]],
+                [[0.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 50.0]],
                 apply_storage_offset=True,
             ),
             atol=0.0001,
             rtol=0.0,
         )
-        self.assertEqual(
-            [line for line in lines if not line.startswith("v ")],
-            [line for line in source_lines if not line.startswith("v ")],
+        self.assertEqual(len(normals), 3)
+        np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1.0, atol=1e-12)
+        source_vertices = np.asarray(
+            [[0.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 50.0]]
         )
+        for point, normal in zip(source_vertices, normals):
+            for tangent in ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+                delta = np.asarray(tangent) * 0.01
+                transformed_tangent = (
+                    contract.transform_points([point + delta])[0]
+                    - contract.transform_points([point - delta])[0]
+                )
+                transformed_tangent /= np.linalg.norm(transformed_tangent)
+                self.assertLess(
+                    abs(float(np.dot(normal, transformed_tangent))), 1e-6
+                )
+        face = next(line for line in lines if line.startswith("f ")).split()[1:]
+        self.assertEqual(
+            ["/".join(token.split("/")[:2]) for token in face],
+            ["1/1", "2/2", "3/3"],
+        )
+        self.assertEqual([token.split("/")[2] for token in face], ["1", "2", "3"])
+        for expected in (
+            "mtllib mesh.mtl\n",
+            "vt 0 0\n",
+            "vt 1 0\n",
+            "vt 0 1\n",
+            "usemtl atlas\n",
+        ):
+            self.assertIn(expected, lines)
+        self.assertEqual(material_text, "newmtl atlas\nmap_Kd texture.jpg\n")
+        self.assertEqual(texture_bytes, b"texture-bytes")
 
 
 class TestDirectOrthophotoStage(unittest.TestCase):

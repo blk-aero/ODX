@@ -62,9 +62,22 @@ secondary-artifact, or post-CRS-alignment systems with it.
 - `ODMOrthoPhotoStage` takes its resolution from the canonical reconstruction
   and reaches the existing renderer only with the persisted matching contract
   and public mesh containing vertices and faces.
+- Contract creation derives the vertical state from the controls OpenSfM
+  actually uses: non-checkpoint GCP height, or usable GPS altitude when GPS is
+  selected. Vertically uncontrolled jobs persist `unreferenced` and retain
+  canonical relative Z.
+- Textured OBJ normals use the inverse-transpose local Jacobian at each
+  referenced vertex. Shared normal indices expand only where the nonlinear
+  operation makes their directions location-dependent; topology, UVs,
+  materials, and textures remain intact.
+- Every requested canonical textured OBJ is now a required direct-core input.
+  A missing or invalid copy removes any stale public OBJ and fails before the
+  stock compatibility reconstruction is invoked, including when orthophoto
+  output is skipped.
 - `tests/test_direct_georeferencing.py` exercises the rejection boundary,
   contract create/reload, streamed point and textured-mesh adapters, canonical
-  compatibility lifecycle, exact stage flow, and direct-render prerequisites.
+  compatibility lifecycle, vertical selection, exact stage flow, required
+  canonical mesh failure, transformed normals, and direct-render prerequisites.
 
 ## Answer
 
@@ -75,3 +88,17 @@ afterward solely for untouched legacy consumers. Direct orthophoto rendering
 uses that public mesh and the persisted contract without a raster warp or
 fallback. Alignment, boundaries, submodels, and auto-boundaries fail closed;
 secondary products and their existing code paths gain no contract integration.
+The follow-up closes the three remaining correctness gaps without widening that
+boundary: production persists the existing GCP/GPS vertical-control signal,
+normal directions follow the local nonlinear operation, and compatibility
+publication cannot reconstruct a missing or invalid canonical OBJ later.
+
+## Follow-up acceptance criteria
+
+- Production selects and persists the correct vertical-reference state rather
+  than always defaulting to ellipsoidal height; unreferenced input preserves
+  relative Z.
+- Public OBJ normals remain valid for the exact transformed surface while UVs,
+  faces, materials, and textures remain intact.
+- A missing or invalid canonical textured mesh is a direct-core failure before
+  the compatibility reconstruction can be published.
