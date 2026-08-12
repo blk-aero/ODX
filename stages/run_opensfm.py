@@ -45,7 +45,11 @@ class ODMOpenSfMStage(types.ODM_Stage):
             shutil.copyfile(tree.opensfm_reconstruction, tree.opensfm_topocentric_reconstruction)
             outputs["fresh_reconstruction"] = True
         if reconstruction.is_georeferenced() and (
-            tree.odm_align_file is not None or is_submodel(tree.opensfm)
+            tree.odm_align_file is not None
+            or is_submodel(tree.opensfm)
+            or args.auto_boundary
+            or "boundary" in outputs
+            or args.boundary
         ):
             octx.run('export_geocoords --reconstruction --proj "%s" --offset-x %s --offset-y %s' %
                 (reconstruction.georef.proj4(), reconstruction.georef.utm_east_offset, reconstruction.georef.utm_north_offset))

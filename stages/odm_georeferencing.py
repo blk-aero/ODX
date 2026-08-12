@@ -2,7 +2,7 @@ import os
 import math
 import shutil
 import struct
-import pipes
+import shlex
 import fiona
 import fiona.crs
 import json
@@ -35,12 +35,6 @@ from opendm.utils import np_to_json
 
 def _vertical_reference(reconstruction, args):
     has_gcp = reconstruction.has_gcp()
-    if has_gcp and any(
-        not entry.is_checkpoint() and not math.isnan(entry.z)
-        for entry in reconstruction.gcp.iter_entries()
-    ):
-        return VerticalReference.WGS84_ELLIPSOIDAL
-
     if not has_gcp or getattr(args, "force_gps", False):
         photos = (
             get_photos_by_band(reconstruction.multi_camera, args.primary_band)
@@ -64,7 +58,11 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             "odm_georeferencing", "coordinate_contract.json"
         )
         if reconstruction.is_georeferenced() and (
-            tree.odm_align_file is None and not is_submodel(tree.opensfm)
+            tree.odm_align_file is None
+            and not is_submodel(tree.opensfm)
+            and not args.auto_boundary
+            and "boundary" not in outputs
+            and not args.boundary
         ):
             try:
                 materialize_canonical_reconstruction(
@@ -194,6 +192,8 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             else:
                 log.WARNING("GCPs could not be loaded for writing to %s" % gcp_export_file)
 
+        exact_point_cloud_exported = False
+        stock_point_cloud_export = None
         if (
             not io.file_exists(tree.odm_georeferencing_model_laz)
             or self.rerun()
@@ -240,6 +240,29 @@ class ODMGeoreferencingStage(types.ODM_Stage):
 
                 exact_exported = False
                 contract = outputs.get("coordinate_contract")
+                def export_stock_point_cloud():
+                    utmoffset = reconstruction.georef.utm_offset()
+                    las_scale = 0.001
+                    if point_spacing is not None:
+                        las_scale = min(pow(10, round(math.log10(point_spacing))) / 10, las_scale)
+                    fallback_params = list(params) + [
+                        '--filters.transformation.matrix="1 0 0 %s 0 1 0 %s 0 0 1 0 0 0 0 1"' % utmoffset,
+                        '--writers.las.offset_x=%s' % reconstruction.georef.utm_east_offset,
+                        '--writers.las.offset_y=%s' % reconstruction.georef.utm_north_offset,
+                        '--writers.las.scale_x=%s' % las_scale,
+                        '--writers.las.scale_y=%s' % las_scale,
+                        '--writers.las.scale_z=%s' % las_scale,
+                        '--writers.las.offset_z=0',
+                        '--writers.las.a_srs="%s"' % reconstruction.georef.proj4(),
+                    ]
+                    if point_cloud_vlrs:
+                        fallback_params.append(
+                            '--writers.las.vlrs=%s' % shlex.quote(json.dumps(point_cloud_vlrs))
+                        )
+                    system.run(
+                        cmd + ' ferry transformation ' + ' '.join(fallback_params)
+                    )
+                stock_point_cloud_export = export_stock_point_cloud
                 if contract is not None:
                     try:
                         result = export_georeferenced_point_cloud(
@@ -255,24 +278,9 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                         log.WARNING("Exact point export unavailable; using stock export: %s" % error)
 
                 if not exact_exported:
-                    utmoffset = reconstruction.georef.utm_offset()
-                    las_scale = 0.001
-                    if point_spacing is not None:
-                        las_scale = min(pow(10, round(math.log10(point_spacing))) / 10, las_scale)
-                    stages.append("transformation")
-                    params += [
-                        '--filters.transformation.matrix="1 0 0 %s 0 1 0 %s 0 0 1 0 0 0 0 1"' % utmoffset,
-                        '--writers.las.offset_x=%s' % reconstruction.georef.utm_east_offset,
-                        '--writers.las.offset_y=%s' % reconstruction.georef.utm_north_offset,
-                        '--writers.las.scale_x=%s' % las_scale,
-                        '--writers.las.scale_y=%s' % las_scale,
-                        '--writers.las.scale_z=%s' % las_scale,
-                        '--writers.las.offset_z=0',
-                        '--writers.las.a_srs="%s"' % reconstruction.georef.proj4(),
-                    ]
-                    if point_cloud_vlrs:
-                        params.append('--writers.las.vlrs="%s"' % json.dumps(point_cloud_vlrs))
-                    system.run(cmd + ' ' + ' '.join(stages) + ' ' + ' '.join(params))
+                    stock_point_cloud_export()
+                else:
+                    exact_point_cloud_exported = True
 
                 self.update_progress(50)
 
@@ -382,6 +390,8 @@ class ODMGeoreferencingStage(types.ODM_Stage):
 
         contract = outputs.get("coordinate_contract")
         if reconstruction.is_georeferenced() and contract is not None:
+            mesh_exported = []
+            mesh_export_failed = False
             for public_obj in textured_model_paths():
                 topocentric_obj = io.related_file_path(
                     public_obj, postfix="_topocentric"
@@ -396,9 +406,26 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                         "Exported exact textured mesh %s (%s vertices, %s faces)"
                         % (public_obj, result.vertex_count, result.face_count)
                     )
+                    mesh_exported.append((public_obj, topocentric_obj))
                 except Exception as error:
                     log.WARNING("Exact mesh export unavailable; keeping stock mesh: %s" % error)
+                    mesh_exported.append((public_obj, topocentric_obj))
+                    mesh_export_failed = True
+                    break
 
+            if mesh_export_failed:
+                for public_obj, topocentric_obj in mesh_exported:
+                    if os.path.isfile(topocentric_obj):
+                        shutil.copyfile(topocentric_obj, public_obj)
+                outputs.pop("coordinate_contract", None)
+                contract = None
+                if exact_point_cloud_exported and stock_point_cloud_export is not None:
+                    try:
+                        stock_point_cloud_export()
+                    except Exception as error:
+                        log.WARNING("Could not restore stock point cloud: %s" % error)
+
+        if reconstruction.is_georeferenced() and contract is not None:
             octx = OSFMContext(tree.opensfm)
 
             def stock_export():

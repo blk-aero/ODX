@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -169,7 +170,10 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                 tree = types.ODM_Tree(root)
                 public_mesh = prepare_stage_files(tree)
                 write_triangle(public_mesh)
-                args = stage_args(auto_boundary=case == "auto_boundary")
+                args = stage_args(
+                    auto_boundary=case == "auto_boundary",
+                    boundary="boundary.json" if case == "boundary" else None,
+                )
                 outputs = {
                     "tree": tree,
                     "reconstruction": GeoreferencedReconstruction(),
@@ -200,6 +204,93 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                     )
 
                 self.assertTrue(os.path.exists(public_mesh))
+                if case in ("boundary", "auto_boundary"):
+                    self.assertNotIn("coordinate_contract", outputs)
+
+    def test_mesh_failure_clears_contract_before_stock_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = types.ODM_Tree(directory)
+            public_mesh = prepare_stage_files(tree)
+            write_triangle(public_mesh)
+            args = stage_args()
+            outputs = {
+                "tree": tree,
+                "reconstruction": GeoreferencedReconstruction(),
+                "fresh_reconstruction": True,
+                "stock_georeferenced_reconstruction": True,
+            }
+
+            with mock.patch(
+                "stages.odm_georeferencing.export_georeferenced_point_cloud",
+                side_effect=fake_point_export,
+            ), mock.patch(
+                "stages.odm_georeferencing.export_georeferenced_mesh",
+                side_effect=RuntimeError("invalid canonical mesh"),
+            ), mock.patch(
+                "stages.odm_georeferencing.point_cloud.post_point_cloud_steps"
+            ), mock.patch(
+                "stages.odm_georeferencing.publish_legacy_reconstruction_compatibility"
+            ) as publish_compatibility, mock.patch(
+                "stages.odm_georeferencing.system.run"
+            ):
+                ODMGeoreferencingStage("odm_georeferencing", args).process(
+                    args, outputs
+                )
+
+        self.assertNotIn("coordinate_contract", outputs)
+        publish_compatibility.assert_not_called()
+
+    def test_quotes_stock_gcp_vlr_json(self):
+        class GCP:
+            def exists(self):
+                return True
+
+            @staticmethod
+            def iter_entries():
+                return iter(())
+
+        with tempfile.TemporaryDirectory() as directory:
+            tree = types.ODM_Tree(directory)
+            prepare_stage_files(tree)
+            zip_path = tree.path(
+                "odm_georeferencing", "ground_control_points.zip"
+            )
+            with open(zip_path, "wb") as vlr:
+                vlr.write(b"gcp")
+            args = stage_args(skip_3dmodel=True)
+            outputs = {
+                "tree": tree,
+                "reconstruction": GeoreferencedReconstruction(gcp=GCP()),
+                "fresh_reconstruction": True,
+            }
+
+            with mock.patch(
+                "stages.odm_georeferencing.OSFMContext.ground_control_points",
+                return_value=[],
+            ), mock.patch(
+                "stages.odm_georeferencing.export_georeferenced_point_cloud",
+                side_effect=RuntimeError("PDAL unavailable"),
+            ), mock.patch(
+                "stages.odm_georeferencing.point_cloud.post_point_cloud_steps"
+            ), mock.patch(
+                "stages.odm_georeferencing.publish_legacy_reconstruction_compatibility"
+            ), mock.patch(
+                "stages.odm_georeferencing.system.run"
+            ) as run:
+                ODMGeoreferencingStage("odm_georeferencing", args).process(
+                    args, outputs
+                )
+
+        command = run.call_args.args[0]
+        vlr_argument = next(
+            argument
+            for argument in shlex.split(command)
+            if argument.startswith("--writers.las.vlrs=")
+        )
+        self.assertEqual(
+            json.loads(vlr_argument.split("=", 1)[1])[0]["filename"],
+            zip_path.replace(os.sep, "/"),
+        )
 
     def test_selects_vertical_state_and_preserves_relative_z(self):
         class GCP:
@@ -229,12 +320,22 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
         self.assertEqual(
             _vertical_reference(
                 GeoreferencedReconstruction(
+                    photos=[SimpleNamespace(band_name="RGB", altitude=100.0)],
+                    gcp=GCP(),
+                ),
+                stage_args(force_gps=True),
+            ),
+            VerticalReference.WGS84_ELLIPSOIDAL,
+        )
+        self.assertEqual(
+            _vertical_reference(
+                GeoreferencedReconstruction(
                     photos=[SimpleNamespace(band_name="RGB", altitude=None)],
                     gcp=GCP(),
                 ),
                 args,
             ),
-            VerticalReference.WGS84_ELLIPSOIDAL,
+            VerticalReference.UNREFERENCED,
         )
 
         with tempfile.TemporaryDirectory() as directory:
