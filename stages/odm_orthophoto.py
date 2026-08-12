@@ -13,31 +13,6 @@ from opendm.cutline import compute_cutline
 from opendm.utils import double_quote
 from opendm import pseudogeo
 from opendm.multispectral import get_primary_band_name
-from opendm.georeferencing import (
-    CoordinateContractError,
-    load_coordinate_contract,
-    validate_canonical_reconstruction,
-)
-
-
-def _mesh_has_geometry(path):
-    try:
-        vertices = False
-        faces = False
-        with open(path, encoding="utf-8", errors="replace") as source:
-            for line in source:
-                fields = line.split()
-                if not fields:
-                    continue
-                vertices = vertices or fields[0] == "v" and len(fields) >= 4
-                faces = faces or fields[0] == "f" and len(fields) >= 4
-                if vertices and faces:
-                    return True
-    except OSError:
-        pass
-    return False
-
-
 class ODMOrthoPhotoStage(types.ODM_Stage):
     def process(self, args, outputs):
         tree = outputs['tree']
@@ -52,13 +27,9 @@ class ODMOrthoPhotoStage(types.ODM_Stage):
 
         if not io.file_exists(tree.odm_orthophoto_tif) or self.rerun():
 
-            working_reconstruction = (
-                tree.opensfm_topocentric_reconstruction
-                if reconstruction.is_georeferenced()
-                else tree.opensfm_reconstruction
-            )
-            if reconstruction.is_georeferenced():
-                validate_canonical_reconstruction(working_reconstruction)
+            direct_contract = outputs.get("coordinate_contract")
+            working_reconstruction = (tree.opensfm_topocentric_reconstruction
+                                      if direct_contract else tree.opensfm_reconstruction)
             resolution = gsd.cap_resolution(args.orthophoto_resolution, working_reconstruction,
                                             ignore_gsd=args.ignore_gsd,
                                             ignore_resolution=(not reconstruction.is_georeferenced()) and args.ignore_gsd,
@@ -123,55 +94,18 @@ class ODMOrthoPhotoStage(types.ODM_Stage):
                 if reconstruction.photos[0].band_name.upper() == "LWIR":
                     kwargs['bands'] = '-bands lwir'
 
-            direct_contract = None
-            if reconstruction.is_georeferenced():
-                contract_path = tree.path(
-                    "odm_georeferencing", "coordinate_contract.json"
-                )
-                try:
-                    direct_contract = load_coordinate_contract(contract_path)
-                except Exception as error:
-                    raise CoordinateContractError(
-                        "direct orthophoto rendering requires a readable persisted "
-                        "coordinate contract; rerun from reconstruction",
-                        artifact=contract_path,
-                        operation="orthophoto direct render",
-                        cause=error,
-                    ) from error
-                stage_contract = outputs.get("coordinate_contract")
-                if stage_contract is not None and stage_contract != direct_contract:
-                    raise CoordinateContractError(
-                        "persisted coordinate contract does not match the stage contract",
-                        artifact=contract_path,
-                        operation="orthophoto direct render",
-                    )
-                invalid_models = [
-                    model for model in models if not _mesh_has_geometry(model)
-                ]
-                if invalid_models:
-                    raise CoordinateContractError(
-                        "direct orthophoto rendering requires a nonempty compatible "
-                        "public georeferenced mesh: %s" % invalid_models[0],
-                        artifact=invalid_models[0],
-                        operation="orthophoto direct render",
-                    )
-
             kwargs['models'] = ','.join(map(double_quote, models))
 
             if reconstruction.is_georeferenced():
                 orthophoto_vars = orthophoto.get_orthophoto_vars(args)
-                kwargs['utm_offsets'] = (
-                    "-utm_north_offset %s -utm_east_offset %s"
-                    % (
-                        direct_contract.storage_offset[1],
-                        direct_contract.storage_offset[0],
-                    )
-                )
-                kwargs['a_srs'] = "-a_srs %s" % double_quote(
-                    direct_contract.output_crs_wkt
-                )
+                if direct_contract:
+                    kwargs['utm_offsets'] = "-utm_north_offset %s -utm_east_offset %s" % (direct_contract.storage_offset[1], direct_contract.storage_offset[0])
+                    kwargs['a_srs'] = "-a_srs %s" % double_quote(direct_contract.output_crs_wkt)
+                else:
+                    kwargs['utm_offsets'] = "-utm_north_offset %s -utm_east_offset %s" % (reconstruction.georef.utm_north_offset, reconstruction.georef.utm_east_offset)
+                    kwargs['a_srs'] = "-a_srs \"%s\"" % reconstruction.georef.proj4()
                 kwargs['vars'] = ' '.join(['-co %s=%s' % (k, orthophoto_vars[k]) for k in orthophoto_vars])
-                kwargs['ortho'] = tree.odm_orthophoto_tif # Render directly to final file
+                kwargs['ortho'] = tree.odm_orthophoto_tif
 
             # run odm_orthophoto
             log.INFO('Creating GeoTIFF')

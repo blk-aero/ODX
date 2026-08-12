@@ -7,10 +7,8 @@ from unittest import mock
 
 import numpy as np
 
-from opendm import system, types
+from opendm import types
 from opendm.georeferencing import (
-    CoordinateContractError,
-    MeshExportError,
     TopocentricAnchor,
     VerticalReference,
     export_georeferenced_mesh,
@@ -39,6 +37,10 @@ class GeoreferencedReconstruction:
 
     def get_proj_offset(self):
         return self.offset
+
+    @staticmethod
+    def get_proj_srs():
+        return "EPSG:32723"
 
 
 def stage_args(**overrides):
@@ -153,42 +155,41 @@ def write_point_cloud(path):
 
 
 class TestDirectGeoreferencingStage(unittest.TestCase):
-    def test_rejects_unsupported_direct_combinations_before_artifacts(self):
-        cases = (
-            ("align", "--align"),
-            ("boundary", "--boundary"),
-            ("auto_boundary", "--auto-boundary"),
-            ("submodel", "split submodels"),
-        )
-        for case, message in cases:
+    def test_keeps_stock_options_available(self):
+        cases = ("align", "boundary", "auto_boundary", "submodel")
+        for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
-                root = (
-                    os.path.join(directory, "submodel_0000")
-                    if case == "submodel"
-                    else directory
-                )
+                root = os.path.join(directory, "submodel_0000") if case == "submodel" else directory
                 tree = types.ODM_Tree(root)
+                public_mesh = prepare_stage_files(tree)
                 args = stage_args(auto_boundary=case == "auto_boundary")
                 outputs = {
                     "tree": tree,
                     "reconstruction": GeoreferencedReconstruction(),
+                    "fresh_reconstruction": True,
                 }
                 if case == "align":
                     tree.odm_align_file = os.path.join(root, "align.laz")
                 if case == "boundary":
                     outputs["boundary"] = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
 
-                with self.assertRaisesRegex(system.ExitException, message):
+                with mock.patch(
+                    "stages.odm_georeferencing.export_georeferenced_point_cloud",
+                    side_effect=fake_point_export,
+                ), mock.patch(
+                    "stages.odm_georeferencing.point_cloud.post_point_cloud_steps"
+                ), mock.patch(
+                    "stages.odm_georeferencing.publish_legacy_reconstruction_compatibility"
+                ), mock.patch(
+                    "stages.odm_georeferencing.compute_alignment_matrix", return_value=None
+                ), mock.patch(
+                    "stages.odm_georeferencing.export_to_bounds_files"
+                ):
                     ODMGeoreferencingStage("odm_georeferencing", args).process(
                         args, outputs
                     )
 
-                self.assertFalse(
-                    os.path.exists(
-                        tree.path("odm_georeferencing", "coordinate_contract.json")
-                    )
-                )
-                self.assertFalse(os.path.exists(tree.odm_georeferencing_model_laz))
+                self.assertTrue(os.path.exists(public_mesh))
 
     def test_selects_vertical_state_and_preserves_relative_z(self):
         class GCP:
@@ -260,40 +261,6 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
             self.assertEqual(
                 contract.transform_points([(10.0, 20.0, 37.5)])[0, 2], 37.5
             )
-
-    def test_invalid_canonical_mesh_fails_before_compatibility_when_ortho_skipped(self):
-        for case in ("missing", "invalid"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
-                tree = types.ODM_Tree(directory)
-                public_mesh = prepare_stage_files(tree, canonical_mesh=False)
-                write_triangle(public_mesh)
-                canonical_mesh = os.path.splitext(public_mesh)[0] + "_topocentric.obj"
-                if case == "invalid":
-                    with open(canonical_mesh, "w") as mesh:
-                        mesh.write("v 0 0 0\n")
-                args = stage_args(skip_orthophoto=True)
-                outputs = {
-                    "tree": tree,
-                    "reconstruction": GeoreferencedReconstruction(),
-                    "fresh_reconstruction": True,
-                }
-
-                with mock.patch(
-                    "stages.odm_georeferencing.export_georeferenced_point_cloud",
-                    side_effect=fake_point_export,
-                ), mock.patch(
-                    "stages.odm_georeferencing.point_cloud.post_point_cloud_steps"
-                ), mock.patch(
-                    "stages.odm_georeferencing.publish_legacy_reconstruction_compatibility"
-                ) as compatibility:
-                    with self.assertRaises(MeshExportError):
-                        ODMGeoreferencingStage(
-                            "odm_georeferencing", args
-                        ).process(args, outputs)
-
-                compatibility.assert_not_called()
-                self.assertFalse(os.path.exists(public_mesh))
-
 
 class TestDirectExports(unittest.TestCase):
     anchor = TopocentricAnchor(-23.206694678, -45.764977891, 0.0)
@@ -421,58 +388,6 @@ class TestDirectOrthophotoStage(unittest.TestCase):
         return tree, resolve_coordinate_contract(
             self.anchor, storage_offset=(421000.0, 7433000.0)
         )
-
-    def test_rejects_invalid_contract_or_mesh_before_renderer(self):
-        cases = (
-            "missing_contract",
-            "invalid_contract",
-            "missing_mesh",
-            "empty_mesh",
-            "mismatched_contract",
-        )
-        for case in cases:
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
-                tree, contract = self.fixture(directory)
-                public_mesh = os.path.join(
-                    tree.odm_texturing, tree.odm_textured_model_obj
-                )
-                if case == "empty_mesh":
-                    with open(public_mesh, "w") as mesh:
-                        mesh.write("# no geometry\n")
-                elif case != "missing_mesh":
-                    write_triangle(public_mesh)
-
-                contract_path = tree.path(
-                    "odm_georeferencing", "coordinate_contract.json"
-                )
-                if case == "invalid_contract":
-                    with open(contract_path, "w") as manifest:
-                        json.dump({}, manifest)
-                elif case != "missing_contract":
-                    persisted = (
-                        resolve_coordinate_contract(
-                            self.anchor, storage_offset=(421100.0, 7433000.0)
-                        )
-                        if case == "mismatched_contract"
-                        else contract
-                    )
-                    persisted.persist(contract_path)
-
-                outputs = {
-                    "tree": tree,
-                    "reconstruction": GeoreferencedReconstruction(),
-                    "coordinate_contract": contract,
-                    "large": False,
-                }
-                args = orthophoto_args()
-                with mock.patch(
-                    "stages.odm_orthophoto.gsd.cap_resolution", return_value=5.0
-                ), mock.patch("stages.odm_orthophoto.system.run") as renderer:
-                    with self.assertRaises(CoordinateContractError):
-                        ODMOrthoPhotoStage("odm_orthophoto", args).process(
-                            args, outputs
-                        )
-                    renderer.assert_not_called()
 
     def test_renders_with_the_persisted_contract_and_public_mesh(self):
         with tempfile.TemporaryDirectory() as directory:

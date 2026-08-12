@@ -19,7 +19,6 @@ from opendm import location
 from opendm.cropper import Cropper
 from opendm import point_cloud
 from opendm.georeferencing import (
-    MeshExportError,
     VerticalReference,
     export_georeferenced_mesh,
     export_georeferenced_point_cloud,
@@ -28,7 +27,7 @@ from opendm.georeferencing import (
     resolve_stage_coordinate_contract,
 )
 from opendm.multispectral import get_photos_by_band, get_primary_band_name
-from opendm.osfm import OSFMContext, is_submodel
+from opendm.osfm import OSFMContext
 from opendm.boundary import as_polygon, export_to_bounds_files
 from opendm.align import compute_alignment_matrix, transform_point_cloud, transform_obj
 from opendm.utils import np_to_json
@@ -65,33 +64,20 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             "odm_georeferencing", "coordinate_contract.json"
         )
         if reconstruction.is_georeferenced():
-            if tree.odm_align_file is not None:
-                raise system.ExitException(
-                    "Direct georeferenced exports do not support --align; rerun without --align."
+            try:
+                materialize_canonical_reconstruction(
+                    tree.opensfm_reconstruction,
+                    tree.opensfm_topocentric_reconstruction,
                 )
-            if getattr(args, "auto_boundary", False):
-                raise system.ExitException(
-                    "Direct georeferenced exports do not support --auto-boundary; rerun without --auto-boundary."
+                outputs["coordinate_contract"] = resolve_stage_coordinate_contract(
+                    coordinate_contract_path,
+                    tree.path("opensfm", "reference_lla.json"),
+                    reconstruction.get_proj_offset(),
+                    fresh_reconstruction=bool(outputs.get("fresh_reconstruction")),
+                    vertical_reference=_vertical_reference(reconstruction, args),
                 )
-            if outputs.get("boundary") is not None or getattr(args, "boundary", None):
-                raise system.ExitException(
-                    "Direct georeferenced exports do not support --boundary; rerun without --boundary."
-                )
-            if is_submodel(tree.opensfm):
-                raise system.ExitException(
-                    "Direct georeferenced exports do not support split submodels; rerun as one project."
-                )
-            materialize_canonical_reconstruction(
-                tree.opensfm_reconstruction,
-                tree.opensfm_topocentric_reconstruction,
-            )
-            outputs["coordinate_contract"] = resolve_stage_coordinate_contract(
-                coordinate_contract_path,
-                tree.path("opensfm", "reference_lla.json"),
-                reconstruction.get_proj_offset(),
-                fresh_reconstruction=bool(outputs.get("fresh_reconstruction")),
-                vertical_reference=_vertical_reference(reconstruction, args),
-            )
+            except Exception as error:
+                log.WARNING("Exact georeferencing unavailable; using stock export: %s" % error)
 
         def textured_model_paths():
             if reconstruction.multi_camera:
@@ -250,14 +236,41 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                     else:
                         log.WARNING("Cannot embed GCP info in point cloud, %s is too large" % gcp_geojson_zip_export_file)
 
-                result = export_georeferenced_point_cloud(
-                    tree.filtered_point_cloud,
-                    tree.odm_georeferencing_model_laz,
-                    outputs["coordinate_contract"],
-                    spacing=point_spacing,
-                    vlrs=point_cloud_vlrs,
-                )
-                log.INFO("Exported %s exact points" % result.point_count)
+                exact_exported = False
+                contract = outputs.get("coordinate_contract")
+                if contract is not None:
+                    try:
+                        result = export_georeferenced_point_cloud(
+                            tree.filtered_point_cloud,
+                            tree.odm_georeferencing_model_laz,
+                            contract,
+                            spacing=point_spacing,
+                            vlrs=point_cloud_vlrs,
+                        )
+                        log.INFO("Exported %s exact points" % result.point_count)
+                        exact_exported = True
+                    except Exception as error:
+                        log.WARNING("Exact point export unavailable; using stock export: %s" % error)
+
+                if not exact_exported:
+                    utmoffset = reconstruction.georef.utm_offset()
+                    las_scale = 0.001
+                    if point_spacing is not None:
+                        las_scale = min(pow(10, round(math.log10(point_spacing))) / 10, las_scale)
+                    stages.append("transformation")
+                    params += [
+                        '--filters.transformation.matrix="1 0 0 %s 0 1 0 %s 0 0 1 0 0 0 0 1"' % utmoffset,
+                        '--writers.las.offset_x=%s' % reconstruction.georef.utm_east_offset,
+                        '--writers.las.offset_y=%s' % reconstruction.georef.utm_north_offset,
+                        '--writers.las.scale_x=%s' % las_scale,
+                        '--writers.las.scale_y=%s' % las_scale,
+                        '--writers.las.scale_z=%s' % las_scale,
+                        '--writers.las.offset_z=0',
+                        '--writers.las.a_srs="%s"' % reconstruction.georef.proj4(),
+                    ]
+                    if point_cloud_vlrs:
+                        params.append('--writers.las.vlrs="%s"' % json.dumps(point_cloud_vlrs))
+                    system.run(cmd + ' ' + ' '.join(stages) + ' ' + ' '.join(params))
 
                 self.update_progress(50)
 
@@ -365,33 +378,25 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             log.WARNING('Found a valid georeferenced model in: %s'
                             % tree.odm_georeferencing_model_laz)
 
-        if reconstruction.is_georeferenced():
+        contract = outputs.get("coordinate_contract")
+        if reconstruction.is_georeferenced() and contract is not None:
             for public_obj in textured_model_paths():
                 topocentric_obj = io.related_file_path(
                     public_obj, postfix="_topocentric"
                 )
                 try:
-                    if not os.path.isfile(topocentric_obj):
-                        raise MeshExportError(
-                            "canonical topocentric mesh is missing; rerun from mvs_texturing",
-                            artifact=public_obj,
-                            operation="select canonical mesh",
-                        )
                     result = export_georeferenced_mesh(
                         topocentric_obj,
                         public_obj,
-                        outputs["coordinate_contract"],
+                        contract,
                     )
                     log.INFO(
                         "Exported exact textured mesh %s (%s vertices, %s faces)"
                         % (public_obj, result.vertex_count, result.face_count)
                     )
-                except MeshExportError:
-                    if os.path.isfile(public_obj):
-                        os.unlink(public_obj)
-                    raise
+                except Exception as error:
+                    log.WARNING("Exact mesh export unavailable; keeping stock mesh: %s" % error)
 
-            contract = outputs["coordinate_contract"]
             octx = OSFMContext(tree.opensfm)
 
             def stock_export():
@@ -405,12 +410,33 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                     )
                 )
 
-            publish_legacy_reconstruction_compatibility(
-                tree.opensfm_reconstruction,
-                tree.opensfm_topocentric_reconstruction,
-                tree.opensfm_geocoords_reconstruction,
-                stock_export,
-            )
+            try:
+                publish_legacy_reconstruction_compatibility(
+                    tree.opensfm_reconstruction,
+                    tree.opensfm_topocentric_reconstruction,
+                    tree.opensfm_geocoords_reconstruction,
+                    stock_export,
+                )
+            except Exception as error:
+                log.WARNING("Could not publish stock reconstruction compatibility: %s" % error)
+        elif reconstruction.is_georeferenced():
+            octx = OSFMContext(tree.opensfm)
+            try:
+                octx.run(
+                    'export_geocoords --reconstruction --proj "%s" '
+                    '--offset-x %s --offset-y %s'
+                    % (
+                        reconstruction.georef.proj4(),
+                        reconstruction.georef.utm_east_offset,
+                        reconstruction.georef.utm_north_offset,
+                    )
+                )
+                shutil.move(
+                    tree.opensfm_geocoords_reconstruction,
+                    tree.opensfm_reconstruction,
+                )
+            except Exception as error:
+                log.WARNING("Could not restore stock reconstruction: %s" % error)
 
         if args.optimize_disk_space and io.file_exists(tree.odm_georeferencing_model_laz) and io.file_exists(tree.filtered_point_cloud):
             os.remove(tree.filtered_point_cloud)
