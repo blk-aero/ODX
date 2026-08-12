@@ -478,7 +478,6 @@ def export_georeferenced_point_cloud(
     spacing: Optional[float] = None,
     chunk_size: int = 250000,
     vlrs: Optional[Sequence[dict]] = None,
-    pdal_module=None,
 ) -> PointCloudExportResult:
     """Stream canonical points through the contract and publish the stock LAZ."""
     if chunk_size <= 0:
@@ -487,23 +486,22 @@ def export_georeferenced_point_cloud(
             artifact=output_path,
             operation="stream point cloud",
         )
-    if pdal_module is None:
-        try:
-            import pdal as pdal_module
-        except Exception as error:
-            raise PointCloudExportError(
-                "PDAL Python bindings are unavailable",
-                artifact=output_path,
-                operation="stream point cloud",
-                cause=error,
-            ) from error
+    try:
+        import pdal
+    except Exception as error:
+        raise PointCloudExportError(
+            "PDAL Python bindings are unavailable",
+            artifact=output_path,
+            operation="stream point cloud",
+            cause=error,
+        ) from error
 
     reader_spec = json.dumps(
         [source_path, {"type": "filters.ferry", "dimensions": "views=>UserData"}]
     )
 
     def batches():
-        pipeline = pdal_module.Pipeline(reader_spec)
+        pipeline = pdal.Pipeline(reader_spec)
         if not pipeline.streamable:
             raise PointCloudExportError(
                 "canonical point-cloud reader is not streamable",
@@ -589,7 +587,7 @@ def export_georeferenced_point_cloud(
                     return len(transformed)
             return 0
 
-        pipeline = pdal_module.Pipeline(
+        pipeline = pdal.Pipeline(
             json.dumps([writer]), arrays=[buffer], stream_handlers=[load_next_batch]
         )
         if not pipeline.streamable:
