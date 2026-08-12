@@ -75,9 +75,10 @@ secondary-artifact, or post-CRS-alignment systems with it.
   stock compatibility reconstruction is invoked, including when orthophoto
   output is skipped.
 - `tests/test_direct_georeferencing.py` exercises the rejection boundary,
-  contract create/reload, streamed point and textured-mesh adapters, canonical
-  compatibility lifecycle, vertical selection, exact stage flow, required
-  canonical mesh failure, transformed normals, and direct-render prerequisites.
+  GCP/GPS/unreferenced vertical selection, streamed point and textured-mesh
+  adapters, required canonical mesh failure, transformed normals, and
+  direct-render prerequisites. Contract resolution and reload are exercised in
+  `tests/test_georeferencing.py`.
 
 ## Answer
 

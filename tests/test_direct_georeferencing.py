@@ -18,7 +18,7 @@ from opendm.georeferencing import (
     load_coordinate_contract,
     resolve_coordinate_contract,
 )
-from stages.odm_georeferencing import ODMGeoreferencingStage
+from stages.odm_georeferencing import ODMGeoreferencingStage, _vertical_reference
 from stages.odm_orthophoto import ODMOrthoPhotoStage
 
 
@@ -190,7 +190,42 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                 )
                 self.assertFalse(os.path.exists(tree.odm_georeferencing_model_laz))
 
-    def test_persists_unreferenced_gps_state_and_preserves_relative_z(self):
+    def test_selects_vertical_state_and_preserves_relative_z(self):
+        class GCP:
+            def exists(self):
+                return True
+
+            @staticmethod
+            def iter_entries():
+                return iter(
+                    [
+                        SimpleNamespace(
+                            z=120.0, is_checkpoint=lambda: False
+                        )
+                    ]
+                )
+
+        args = stage_args()
+        self.assertEqual(
+            _vertical_reference(
+                GeoreferencedReconstruction(
+                    photos=[SimpleNamespace(band_name="RGB", altitude=100.0)]
+                ),
+                args,
+            ),
+            VerticalReference.WGS84_ELLIPSOIDAL,
+        )
+        self.assertEqual(
+            _vertical_reference(
+                GeoreferencedReconstruction(
+                    photos=[SimpleNamespace(band_name="RGB", altitude=None)],
+                    gcp=GCP(),
+                ),
+                args,
+            ),
+            VerticalReference.WGS84_ELLIPSOIDAL,
+        )
+
         with tempfile.TemporaryDirectory() as directory:
             tree = types.ODM_Tree(directory)
             prepare_stage_files(tree)

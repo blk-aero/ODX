@@ -37,17 +37,19 @@ compiling code boundaries and makes the scope reductions reviewable:
    artifact boundary`) together. They are documentation-only decisions that
    constrain the following integration; they add no dead pre-integration guard.
 3. Read `ccc34b9` (`Integrate direct georeferencing exports`) with
-   `a7ec757` (`Reduce georeferencing behavioral evidence`) and `711465b`
-   (`Cover coordinate contract edge cases`). The first is the direct runtime
-   seam; the next two remove simulated coverage and retain the specific
-   automatic-CRS, vertical-state, and validation cases that still establish the
-   core guarantee.
+   `a7ec757` (`Reduce georeferencing behavioral evidence`), `711465b`
+   (`Cover coordinate contract edge cases`), and `ce422dc` (`Fix direct
+   georeferencing correctness`). The first is the direct runtime seam; the
+   next two remove simulated coverage and retain the specific automatic-CRS
+   and validation cases. The correction makes the vertical state live,
+   transforms OBJ normals correctly, and fails closed on a missing canonical
+   mesh without widening the seam.
 
-`144cddf`, `ccc34b9`, `a7ec757`, and `711465b` each compile at their own
-commit after their already-introduced dependencies. The intervening boundary
-commits are docs-only. Rewriting would not repair a build or scope boundary;
-it would only hide the intentional evidence reduction, so the series remains
-as committed.
+`144cddf`, `ccc34b9`, `a7ec757`, `711465b`, and `ce422dc` each compile at
+their own commit after their already-introduced dependencies. The intervening
+boundary commits are docs-only. Rewriting would not repair a build or scope
+boundary; it would only hide the intentional evidence reduction and its
+review-driven correctness follow-up, so the series remains as committed.
 
 The read-only broad reference contains work that is deliberately absent here:
 the unused GDAL exact-raster warp and its tests; benchmark/release tooling;
@@ -62,16 +64,17 @@ to georeferencing and is not in this series.
 
 ## Validation limitation
 
-Static compilation passed for every code-bearing commit. The focused Python
-tests could not run on this host because its Python environment lacks NumPy;
-the available Docker CLI also has no running daemon, so the project container
-and its PDAL bindings could not be used. In particular, the real LAZ check
-must still be run in the project container, where it explicitly requires PDAL
-Python bindings.
+Static compilation passed for every code-bearing commit. A temporary pinned
+environment ran the two contract tests and six native-independent direct
+tests; the real LAZ test skips explicitly because host PDAL Python bindings
+are absent. The available Docker CLI also has no running daemon, so the
+project container could not supply those bindings. The real LAZ check must
+still run in that project container.
 
 ## Answer
 
-Keep the eight implementation commits in order, then read this closure record.
-The series is already the smallest scope-preserving history: contract,
-decisions, direct integration, and final behavioral evidence remain distinct,
-and no broad-PR subsystem or workflow deletion leaks into it.
+Keep the commits in this order. The tracker records the review-driven
+correction after the original closure instead of hiding it in a history
+rewrite. The series remains the smallest scope-preserving history: contract,
+decisions, direct integration, correction, and behavioral evidence remain
+distinct, and no broad-PR subsystem or workflow deletion leaks into it.
