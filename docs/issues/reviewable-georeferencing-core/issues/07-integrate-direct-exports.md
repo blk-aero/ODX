@@ -1,7 +1,7 @@
 # Integrate the minimum coordinate contract into direct exports
 
 Type: task
-Status: open
+Status: resolved
 Blocked by: 01, 02, 03, 04
 
 ## Goal
@@ -50,3 +50,28 @@ secondary-artifact, or post-CRS-alignment systems with it.
 - The direct path creates no output-selection manifest, shared-observation or
   derivative manifest, and performs no merge validation; those are deferred.
 - The stock path remains unchanged until this direct path is selected.
+
+## Outcome
+
+- `ODMOpenSfMStage` snapshots and rematerializes the canonical reconstruction,
+  and `ODMMvsTexStage` retains the canonical textured OBJ for exact export.
+- `ODMGeoreferencingStage` rejects the four unsupported direct combinations
+  before the contract or public artifacts, creates or strictly reloads the
+  Ticket 01 contract, publishes exact LAZ and XY-local textured OBJ geometry,
+  then late-publishes only stock OpenSfM's affine reconstruction view.
+- `ODMOrthoPhotoStage` takes its resolution from the canonical reconstruction
+  and reaches the existing renderer only with the persisted matching contract
+  and public mesh containing vertices and faces.
+- `tests/test_direct_georeferencing.py` exercises the rejection boundary,
+  contract create/reload, streamed point and textured-mesh adapters, canonical
+  compatibility lifecycle, exact stage flow, and direct-render prerequisites.
+
+## Answer
+
+The minimum contract is integrated only at the ordinary georeferenced direct
+boundary. Canonical geometry remains authoritative until the exact public LAZ
+and textured OBJ are published; the stock affine reconstruction is generated
+afterward solely for untouched legacy consumers. Direct orthophoto rendering
+uses that public mesh and the persisted contract without a raster warp or
+fallback. Alignment, boundaries, submodels, and auto-boundaries fail closed;
+secondary products and their existing code paths gain no contract integration.

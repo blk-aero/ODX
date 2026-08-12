@@ -11,9 +11,9 @@ orthophoto rendering with clear preconditions.
 
 - Maintain correctness at the public geometry boundary; delete speculative or
   unused features rather than preserving them by default.
-- Work from `7eed3705afc149b67d2fe9b129118cf02c3c0c18` on
-  `codex/georeferencing-direct-raster`. Do not disturb the pre-existing
-  deletion of `AGENTS.md`.
+- Build on the current master-based branch; use
+  `7eed3705afc149b67d2fe9b129118cf02c3c0c18` only as a read-only reference.
+  Do not disturb the pre-existing deletion of `AGENTS.md`.
 - Use `/ponytail` (full), `/grilling`, and `/domain-modeling`. A direct
   orthophoto is intentionally distinct from a raster coordinate warp.
 - GitHub Issues are disabled here, so this local Markdown tracker is the
@@ -26,10 +26,7 @@ orthophoto rendering with clear preconditions.
 - [Ticket 02: `--align` boundary](issues/02-align-boundary.md) — preserve stock alignment until direct exports are integrated, then reject `--align` at direct-export entry rather than add partial post-CRS alignment.
 - [Ticket 03: split/merge boundary](issues/03-split-merge-boundary.md) — retain stock split/merge until direct integration; then reject georeferenced submodels at direct-export entry before contracts or artifacts, deferring output selection and merge validation.
 - [Ticket 04: secondary-artifact boundary](issues/04-secondary-artifact-boundary.md) — retain stock secondary consumers through the late affine reconstruction view; point/mesh are exact, orthophoto is direct, and boundary selection is deferred with a fail-closed guard.
-
-## Required implementation
-
-- [Ticket 07: integrate the minimum coordinate contract into direct exports](issues/07-integrate-direct-exports.md) — wire the resolved core boundaries into the ordinary single-project path.
+- [Ticket 07: direct-export integration](issues/07-integrate-direct-exports.md) — preserve canonical geometry through exact LAZ/mesh export, late-publish stock affine compatibility, and render orthophotos only from validated direct inputs.
 
 ## Not yet specified
 

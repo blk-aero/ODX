@@ -47,6 +47,18 @@ class ManifestError(GeoreferencingError):
     pass
 
 
+class PointCloudExportError(GeoreferencingError):
+    pass
+
+
+class MeshExportError(GeoreferencingError):
+    pass
+
+
+class ReconstructionError(GeoreferencingError):
+    pass
+
+
 class VerticalReference(str, Enum):
     WGS84_ELLIPSOIDAL = "wgs84_ellipsoidal"
     UNREFERENCED = "unreferenced"
@@ -258,6 +270,19 @@ class CoordinateContract:
             )
 
 
+@dataclass(frozen=True)
+class PointCloudExportResult:
+    point_count: int
+    scale: Tuple[float, float, float]
+    offset: Tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class MeshExportResult:
+    vertex_count: int
+    face_count: int
+
+
 def resolve_coordinate_contract(
     anchor: TopocentricAnchor,
     *,
@@ -309,6 +334,457 @@ def load_coordinate_contract(path: str) -> CoordinateContract:
     except Exception as error:
         raise ManifestError(
             rerun, artifact=path, operation="load manifest", cause=error
+        ) from error
+
+
+def load_topocentric_anchor(path: str) -> TopocentricAnchor:
+    try:
+        with open(path) as reference_file:
+            reference = json.load(reference_file)
+        return TopocentricAnchor(
+            reference["latitude"], reference["longitude"], reference["altitude"]
+        )
+    except Exception as error:
+        raise CoordinateContractError(
+            "could not read the persisted topocentric anchor",
+            artifact=path,
+            operation="resolve stage contract",
+            cause=error,
+        ) from error
+
+
+def resolve_stage_coordinate_contract(
+    manifest_path: str,
+    reference_path: str,
+    storage_offset: Sequence[float],
+    *,
+    fresh_reconstruction: bool = False,
+    vertical_reference: VerticalReference = VerticalReference.WGS84_ELLIPSOIDAL,
+) -> CoordinateContract:
+    """Create a fresh contract or reload the exact persisted contract."""
+    expected = resolve_coordinate_contract(
+        load_topocentric_anchor(reference_path),
+        storage_offset=storage_offset,
+        vertical_reference=vertical_reference,
+    )
+    if os.path.exists(manifest_path):
+        try:
+            persisted = load_coordinate_contract(manifest_path)
+            if persisted == expected:
+                return persisted
+            if not fresh_reconstruction:
+                raise ManifestError(
+                    "coordinate contract does not match reconstructed project metadata; "
+                    "rerun from reconstruction",
+                    artifact=manifest_path,
+                    operation="validate project contract",
+                )
+        except ManifestError:
+            if not fresh_reconstruction:
+                raise
+    elif not fresh_reconstruction:
+        raise ManifestError(
+            "coordinate contract is missing; rerun from reconstruction",
+            artifact=manifest_path,
+            operation="stage reload",
+        )
+    expected.persist(manifest_path)
+    return expected
+
+
+PUBLIC_LAZ_DIMENSIONS = (
+    "X",
+    "Y",
+    "Z",
+    "Intensity",
+    "ReturnNumber",
+    "NumberOfReturns",
+    "ScanDirectionFlag",
+    "EdgeOfFlightLine",
+    "Classification",
+    "Synthetic",
+    "KeyPoint",
+    "Withheld",
+    "Overlap",
+    "ScanAngleRank",
+    "UserData",
+    "PointSourceId",
+    "GpsTime",
+    "Red",
+    "Green",
+    "Blue",
+)
+
+
+def _public_point_cloud_batch(
+    source: np.ndarray, contract: CoordinateContract
+) -> np.ndarray:
+    names = source.dtype.names or ()
+    if not {"X", "Y", "Z"}.issubset(names):
+        raise PointCloudExportError(
+            "point dimensions X, Y, and Z are required",
+            artifact="georeferenced point cloud",
+            operation="transform point batch",
+        )
+    output_names = tuple(name for name in PUBLIC_LAZ_DIMENSIONS if name in names)
+    output = np.empty(
+        source.shape,
+        dtype=[
+            (name, np.float64 if name in ("X", "Y", "Z") else source.dtype[name])
+            for name in output_names
+        ],
+    )
+    for name in output_names:
+        output[name] = source[name]
+    transformed = contract.transform_points(
+        np.column_stack((source["X"], source["Y"], source["Z"]))
+    )
+    for index, name in enumerate(("X", "Y", "Z")):
+        output[name] = transformed[:, index]
+    return output
+
+
+def _las_encoding(
+    lower: np.ndarray, upper: np.ndarray, spacing: Optional[float]
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    if spacing is None:
+        spacing = 0.01
+    if not math.isfinite(spacing) or spacing <= 0.0:
+        raise PointCloudExportError(
+            "point spacing must be finite and positive",
+            artifact="georeferenced point cloud",
+            operation="select LAS encoding",
+        )
+    scale_value = min(pow(10.0, round(math.log10(spacing))) / 10.0, 0.001)
+    scale = np.full(3, scale_value)
+    offset = (lower + upper) / 2.0
+    encoded = np.vstack(((lower - offset) / scale, (upper - offset) / scale))
+    int32 = np.iinfo(np.int32)
+    if np.any(encoded < int32.min) or np.any(encoded > int32.max):
+        raise PointCloudExportError(
+            "selected LAS scale cannot encode coordinates as signed 32-bit integers",
+            artifact="georeferenced point cloud",
+            operation="select LAS encoding",
+            coordinate=lower,
+        )
+    return tuple(scale), tuple(offset)
+
+
+def export_georeferenced_point_cloud(
+    source_path: str,
+    output_path: str,
+    contract: CoordinateContract,
+    *,
+    spacing: Optional[float] = None,
+    chunk_size: int = 250000,
+    vlrs: Optional[Sequence[dict]] = None,
+    pdal_module=None,
+) -> PointCloudExportResult:
+    """Stream canonical points through the contract and publish the stock LAZ."""
+    if chunk_size <= 0:
+        raise PointCloudExportError(
+            "chunk size must be positive",
+            artifact=output_path,
+            operation="stream point cloud",
+        )
+    if pdal_module is None:
+        try:
+            import pdal as pdal_module
+        except Exception as error:
+            raise PointCloudExportError(
+                "PDAL Python bindings are unavailable",
+                artifact=output_path,
+                operation="stream point cloud",
+                cause=error,
+            ) from error
+
+    reader_spec = json.dumps(
+        [source_path, {"type": "filters.ferry", "dimensions": "views=>UserData"}]
+    )
+
+    def batches():
+        pipeline = pdal_module.Pipeline(reader_spec)
+        if not pipeline.streamable:
+            raise PointCloudExportError(
+                "canonical point-cloud reader is not streamable",
+                artifact=output_path,
+                operation="stream point cloud",
+            )
+        return pipeline.iterator(chunk_size=chunk_size)
+
+    point_count = 0
+    lower = np.full(3, np.inf)
+    upper = np.full(3, -np.inf)
+    output_dtype = None
+    temporary = None
+    try:
+        for source in batches():
+            if len(source) == 0:
+                continue
+            transformed = _public_point_cloud_batch(source, contract)
+            coordinates = np.column_stack(
+                (transformed["X"], transformed["Y"], transformed["Z"])
+            )
+            lower = np.minimum(lower, np.min(coordinates, axis=0))
+            upper = np.maximum(upper, np.max(coordinates, axis=0))
+            point_count += len(transformed)
+            if output_dtype is None:
+                output_dtype = transformed.dtype
+            elif transformed.dtype != output_dtype:
+                raise PointCloudExportError(
+                    "point dimensions changed between streamed batches",
+                    artifact=output_path,
+                    operation="scan point cloud",
+                )
+        if point_count == 0:
+            raise PointCloudExportError(
+                "canonical point cloud contains no points",
+                artifact=output_path,
+                operation="scan point cloud",
+            )
+
+        scale, offset = _las_encoding(lower, upper, spacing)
+        output_directory = os.path.dirname(output_path) or "."
+        os.makedirs(output_directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(output_path) + ".",
+            suffix=".tmp.laz",
+            dir=output_directory,
+        )
+        os.close(descriptor)
+        os.unlink(temporary)
+        writer = {
+            "type": "writers.las",
+            "filename": temporary,
+            "compression": "laszip",
+            "a_srs": contract.output_crs_wkt,
+            "minor_version": 2,
+            "dataformat_id": 3,
+            "scale_x": scale[0],
+            "scale_y": scale[1],
+            "scale_z": scale[2],
+            "offset_x": offset[0],
+            "offset_y": offset[1],
+            "offset_z": offset[2],
+        }
+        if vlrs is not None:
+            writer["vlrs"] = vlrs
+        source_batches = iter(batches())
+        buffer = np.empty(chunk_size, dtype=output_dtype)
+        written_count = 0
+
+        def load_next_batch():
+            nonlocal written_count
+            for source in source_batches:
+                if len(source):
+                    transformed = _public_point_cloud_batch(source, contract)
+                    if transformed.dtype != output_dtype or len(transformed) > len(buffer):
+                        raise PointCloudExportError(
+                            "streamed point layout changed during export",
+                            artifact=output_path,
+                            operation="write LAZ",
+                        )
+                    buffer[: len(transformed)] = transformed
+                    written_count += len(transformed)
+                    return len(transformed)
+            return 0
+
+        pipeline = pdal_module.Pipeline(
+            json.dumps([writer]), arrays=[buffer], stream_handlers=[load_next_batch]
+        )
+        if not pipeline.streamable:
+            raise PointCloudExportError(
+                "LAZ writer is not streamable",
+                artifact=output_path,
+                operation="write LAZ",
+            )
+        reported_count = pipeline.execute_streaming(chunk_size=chunk_size)
+        if written_count != point_count or reported_count != point_count:
+            raise PointCloudExportError(
+                "point count changed during LAZ serialization",
+                artifact=output_path,
+                operation="write LAZ",
+            )
+        os.replace(temporary, output_path)
+        temporary = None
+        return PointCloudExportResult(point_count, scale, offset)
+    except GeoreferencingError:
+        raise
+    except Exception as error:
+        raise PointCloudExportError(
+            "point-cloud export failed",
+            artifact=output_path,
+            operation="write exact LAZ",
+            cause=error,
+        ) from error
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def export_georeferenced_mesh(
+    source_path: str, output_path: str, contract: CoordinateContract
+) -> MeshExportResult:
+    """Atomically transform OBJ vertices while preserving its visual structure."""
+    temporary = None
+    try:
+        with open(source_path) as source:
+            lines = source.readlines()
+        vertices = np.asarray(
+            [
+                [float(value) for value in line.split()[1:4]]
+                for line in lines
+                if line.startswith("v ")
+            ]
+        )
+        face_count = sum(line.startswith("f ") for line in lines)
+        if len(vertices) == 0 or face_count == 0:
+            raise MeshExportError(
+                "canonical mesh must contain vertices and faces",
+                artifact=output_path,
+                operation="transform OBJ",
+            )
+        transformed = contract.transform_points(
+            vertices, apply_storage_offset=True
+        )
+        output_directory = os.path.dirname(output_path) or "."
+        os.makedirs(output_directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(output_path) + ".",
+            suffix=".tmp.obj",
+            dir=output_directory,
+        )
+        with os.fdopen(descriptor, "w") as output:
+            vertex_index = 0
+            for line in lines:
+                if line.startswith("v "):
+                    output.write(
+                        "v {:.17g} {:.17g} {:.17g}\n".format(
+                            *transformed[vertex_index]
+                        )
+                    )
+                    vertex_index += 1
+                else:
+                    output.write(line)
+        os.replace(temporary, output_path)
+        temporary = None
+        return MeshExportResult(len(vertices), face_count)
+    except GeoreferencingError:
+        raise
+    except Exception as error:
+        raise MeshExportError(
+            "mesh export failed",
+            artifact=output_path,
+            operation="write exact OBJ",
+            cause=error,
+        ) from error
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def validate_canonical_reconstruction(path: str) -> None:
+    try:
+        with open(path) as reconstruction_file:
+            reconstruction = json.load(reconstruction_file)
+        if not isinstance(reconstruction, list) or not reconstruction:
+            raise ValueError("OpenSfM reconstruction must be a nonempty list")
+    except Exception as error:
+        raise ReconstructionError(
+            "canonical topocentric reconstruction is missing or incompatible; "
+            "rerun from reconstruction",
+            artifact=path,
+            operation="validate canonical reconstruction",
+            cause=error,
+        ) from error
+
+
+def _atomic_copy(source_path: str, output_path: str) -> None:
+    temporary = None
+    try:
+        output_directory = os.path.dirname(output_path) or "."
+        os.makedirs(output_directory, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=os.path.basename(output_path) + ".", dir=output_directory
+        )
+        with open(source_path, "rb") as source, os.fdopen(descriptor, "wb") as output:
+            while True:
+                block = source.read(1024 * 1024)
+                if not block:
+                    break
+                output.write(block)
+        os.replace(temporary, output_path)
+        temporary = None
+    except Exception as error:
+        raise ReconstructionError(
+            "canonical reconstruction file operation failed",
+            artifact=output_path,
+            operation="copy canonical reconstruction",
+            cause=error,
+        ) from error
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def preserve_canonical_reconstruction(active_path: str, canonical_path: str) -> None:
+    validate_canonical_reconstruction(active_path)
+    _atomic_copy(active_path, canonical_path)
+
+
+def materialize_canonical_reconstruction(active_path: str, canonical_path: str) -> None:
+    validate_canonical_reconstruction(canonical_path)
+    _atomic_copy(canonical_path, active_path)
+
+
+def publish_legacy_reconstruction_compatibility(
+    active_path: str,
+    canonical_path: str,
+    generated_path: str,
+    stock_export,
+) -> None:
+    """Late-publish stock OpenSfM's affine view from canonical input only."""
+    materialize_canonical_reconstruction(active_path, canonical_path)
+    try:
+        os.unlink(generated_path)
+    except FileNotFoundError:
+        pass
+    try:
+        stock_export()
+        try:
+            with open(generated_path) as reconstruction_file:
+                generated = json.load(reconstruction_file)
+            if not isinstance(generated, list) or not generated:
+                raise ValueError("OpenSfM reconstruction must be a nonempty list")
+        except Exception as validation_error:
+            raise ReconstructionError(
+                "stock OpenSfM did not produce a compatible reconstruction",
+                artifact=generated_path,
+                operation="publish legacy reconstruction",
+                cause=validation_error,
+            ) from validation_error
+        os.replace(generated_path, active_path)
+    except Exception as error:
+        try:
+            os.unlink(generated_path)
+        except FileNotFoundError:
+            pass
+        if isinstance(error, GeoreferencingError):
+            raise
+        raise ReconstructionError(
+            "stock OpenSfM compatibility export failed",
+            artifact=generated_path,
+            operation="publish legacy reconstruction",
+            cause=error,
         ) from error
 
 

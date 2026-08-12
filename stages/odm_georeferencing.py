@@ -6,7 +6,6 @@ import fiona
 import fiona.crs
 import json
 import zipfile
-import math
 from collections import OrderedDict
 from pyproj import CRS
 
@@ -18,8 +17,15 @@ from opendm import context
 from opendm import location
 from opendm.cropper import Cropper
 from opendm import point_cloud
+from opendm.georeferencing import (
+    export_georeferenced_mesh,
+    export_georeferenced_point_cloud,
+    materialize_canonical_reconstruction,
+    publish_legacy_reconstruction_compatibility,
+    resolve_stage_coordinate_contract,
+)
 from opendm.multispectral import get_primary_band_name
-from opendm.osfm import OSFMContext
+from opendm.osfm import OSFMContext, is_submodel
 from opendm.boundary import as_polygon, export_to_bounds_files
 from opendm.align import compute_alignment_matrix, transform_point_cloud, transform_obj
 from opendm.utils import np_to_json
@@ -28,6 +34,54 @@ class ODMGeoreferencingStage(types.ODM_Stage):
     def process(self, args, outputs):
         tree = outputs['tree']
         reconstruction = outputs['reconstruction']
+
+        coordinate_contract_path = tree.path(
+            "odm_georeferencing", "coordinate_contract.json"
+        )
+        if reconstruction.is_georeferenced():
+            if tree.odm_align_file is not None:
+                raise system.ExitException(
+                    "Direct georeferenced exports do not support --align; rerun without --align."
+                )
+            if getattr(args, "auto_boundary", False):
+                raise system.ExitException(
+                    "Direct georeferenced exports do not support --auto-boundary; rerun without --auto-boundary."
+                )
+            if outputs.get("boundary") is not None or getattr(args, "boundary", None):
+                raise system.ExitException(
+                    "Direct georeferenced exports do not support --boundary; rerun without --boundary."
+                )
+            if is_submodel(tree.opensfm):
+                raise system.ExitException(
+                    "Direct georeferenced exports do not support split submodels; rerun as one project."
+                )
+            materialize_canonical_reconstruction(
+                tree.opensfm_reconstruction,
+                tree.opensfm_topocentric_reconstruction,
+            )
+            outputs["coordinate_contract"] = resolve_stage_coordinate_contract(
+                coordinate_contract_path,
+                tree.path("opensfm", "reference_lla.json"),
+                reconstruction.get_proj_offset(),
+                fresh_reconstruction=bool(outputs.get("fresh_reconstruction")),
+            )
+
+        def textured_model_paths():
+            for texturing in (tree.odm_texturing, tree.odm_25dtexturing):
+                if reconstruction.multi_camera:
+                    primary = get_primary_band_name(
+                        reconstruction.multi_camera, args.primary_band
+                    )
+                    subdirectories = [
+                        "" if band['name'] == primary else band['name'].lower()
+                        for band in reconstruction.multi_camera
+                    ]
+                else:
+                    subdirectories = [""]
+                for subdirectory in subdirectories:
+                    yield os.path.join(
+                        texturing, subdirectory, tree.odm_textured_model_obj
+                    )
 
         # Export GCP information if available
 
@@ -117,7 +171,11 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             else:
                 log.WARNING("GCPs could not be loaded for writing to %s" % gcp_export_file)
 
-        if not io.file_exists(tree.odm_georeferencing_model_laz) or self.rerun():
+        if (
+            not io.file_exists(tree.odm_georeferencing_model_laz)
+            or self.rerun()
+            or outputs.get("fresh_reconstruction")
+        ):
             cmd = f'pdal translate -i "{tree.filtered_point_cloud}" -o \"{tree.odm_georeferencing_model_laz}\"'
             stages = ["ferry"]
             params = [
@@ -129,51 +187,42 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             if reconstruction.is_georeferenced():
                 log.INFO("Georeferencing point cloud")
 
-                stages.append("transformation")
-                utmoffset = reconstruction.georef.utm_offset()
-
                 # Establish appropriate las scale for export
-                las_scale = 0.001
+                point_spacing = None
                 filtered_point_cloud_stats = tree.path("odm_filterpoints", "point_cloud_stats.json")
-                # Function that rounds to the nearest 10
-                # and then chooses the one below so our
-                # las scale is sensible
-                def powerr(r):
-                    return pow(10,round(math.log10(r))) / 10
 
                 if os.path.isfile(filtered_point_cloud_stats):
                     try:
                         with open(filtered_point_cloud_stats, 'r') as stats:
                              las_stats = json.load(stats)
-                             spacing = powerr(las_stats['spacing'])
-                             log.INFO("las scale calculated as the minimum of 1/10 estimated spacing or %s, which ever is less." % las_scale)
-                             las_scale = min(spacing, 0.001)
+                             point_spacing = las_stats['spacing']
+                             log.INFO("LAS scale uses the minimum of the spacing-derived value and 0.001 metre")
                     except Exception as e:
-                        log.WARNING("Cannot find file point_cloud_stats.json. Using default las scale: %s" % las_scale)
+                        log.WARNING("Cannot read point_cloud_stats.json. Using default LAS scale: 0.001")
                 else:
-                    log.INFO("No point_cloud_stats.json found. Using default las scale: %s" % las_scale)
+                    log.INFO("No point_cloud_stats.json found. Using default LAS scale: 0.001")
 
-                params += [
-                    f'--filters.transformation.matrix="1 0 0 {utmoffset[0]} 0 1 0 {utmoffset[1]} 0 0 1 0 0 0 0 1"',
-                    f'--writers.las.offset_x={reconstruction.georef.utm_east_offset}' ,
-                    f'--writers.las.offset_y={reconstruction.georef.utm_north_offset}',
-                    f'--writers.las.scale_x={las_scale}',
-                    f'--writers.las.scale_y={las_scale}',
-                    f'--writers.las.scale_z={las_scale}',
-                    '--writers.las.offset_z=0',
-                    f'--writers.las.a_srs="{reconstruction.georef.proj4()}"' # HOBU this should maybe be WKT
-                ]
-
+                point_cloud_vlrs = None
                 if reconstruction.has_gcp() and io.file_exists(gcp_geojson_zip_export_file):
                     if os.path.getsize(gcp_geojson_zip_export_file) <= 65535:
                         log.INFO("Embedding GCP info in point cloud")
-                        params += [
-                            '--writers.las.vlrs="{\\\"filename\\\": \\\"%s\\\", \\\"user_id\\\": \\\"ODX\\\", \\\"record_id\\\": 2, \\\"description\\\": \\\"Ground Control Points (zip)\\\"}"' % gcp_geojson_zip_export_file.replace(os.sep, "/")
-                        ]
+                        point_cloud_vlrs = [{
+                            "filename": gcp_geojson_zip_export_file.replace(os.sep, "/"),
+                            "user_id": "ODX",
+                            "record_id": 2,
+                            "description": "Ground Control Points (zip)",
+                        }]
                     else:
                         log.WARNING("Cannot embed GCP info in point cloud, %s is too large" % gcp_geojson_zip_export_file)
 
-                system.run(cmd + ' ' + ' '.join(stages) + ' ' + ' '.join(params))
+                result = export_georeferenced_point_cloud(
+                    tree.filtered_point_cloud,
+                    tree.odm_georeferencing_model_laz,
+                    outputs["coordinate_contract"],
+                    spacing=point_spacing,
+                    vlrs=point_cloud_vlrs,
+                )
+                log.INFO("Exported %s exact points" % result.point_count)
 
                 self.update_progress(50)
 
@@ -281,8 +330,48 @@ class ODMGeoreferencingStage(types.ODM_Stage):
             log.WARNING('Found a valid georeferenced model in: %s'
                             % tree.odm_georeferencing_model_laz)
 
+        if reconstruction.is_georeferenced():
+            for public_obj in textured_model_paths():
+                topocentric_obj = io.related_file_path(
+                    public_obj, postfix="_topocentric"
+                )
+                if os.path.isfile(topocentric_obj):
+                    result = export_georeferenced_mesh(
+                        topocentric_obj,
+                        public_obj,
+                        outputs["coordinate_contract"],
+                    )
+                    log.INFO(
+                        "Exported exact textured mesh %s (%s vertices, %s faces)"
+                        % (public_obj, result.vertex_count, result.face_count)
+                    )
+                elif os.path.isfile(public_obj):
+                    os.unlink(public_obj)
+                    log.WARNING(
+                        "Cannot publish textured model because its canonical topocentric "
+                        "copy is missing; rerun from mvs_texturing: %s" % public_obj
+                    )
+
+            contract = outputs["coordinate_contract"]
+            octx = OSFMContext(tree.opensfm)
+
+            def stock_export():
+                octx.run(
+                    'export_geocoords --reconstruction --proj "%s" '
+                    '--offset-x %s --offset-y %s'
+                    % (
+                        contract.output_crs.to_proj4(),
+                        contract.storage_offset[0],
+                        contract.storage_offset[1],
+                    )
+                )
+
+            publish_legacy_reconstruction_compatibility(
+                tree.opensfm_reconstruction,
+                tree.opensfm_topocentric_reconstruction,
+                tree.opensfm_geocoords_reconstruction,
+                stock_export,
+            )
+
         if args.optimize_disk_space and io.file_exists(tree.odm_georeferencing_model_laz) and io.file_exists(tree.filtered_point_cloud):
             os.remove(tree.filtered_point_cloud)
-
-
-

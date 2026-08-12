@@ -16,6 +16,10 @@ from opendm import multispectral
 from opendm import thermal
 from opendm import nvm
 from opendm.photo import find_largest_photo
+from opendm.georeferencing import (
+    materialize_canonical_reconstruction,
+    preserve_canonical_reconstruction,
+)
 
 from opensfm.undistort import add_image_format_extension
 
@@ -30,12 +34,31 @@ class ODMOpenSfMStage(types.ODM_Stage):
 
         octx = OSFMContext(tree.opensfm)
         octx.setup(args, tree.dataset_raw, photos, reconstruction=reconstruction, rerun=self.rerun())
+        reconstruction_existed = io.file_exists(tree.opensfm_reconstruction)
+        if reconstruction.is_georeferenced() and reconstruction_existed:
+            if io.file_exists(tree.opensfm_topocentric_reconstruction):
+                materialize_canonical_reconstruction(
+                    tree.opensfm_reconstruction,
+                    tree.opensfm_topocentric_reconstruction,
+                )
+            elif not self.rerun():
+                raise system.ExitException(
+                    "Canonical topocentric reconstruction is missing; rerun from reconstruction."
+                )
         octx.photos_to_metadata(photos, args.rolling_shutter, args.rolling_shutter_readout, args.gps_accuracy, self.rerun())
         self.update_progress(20)
         octx.feature_matching(self.rerun())
         self.update_progress(30)
         octx.create_tracks(self.rerun())
         octx.reconstruct(args.sfm_algorithm, args.rolling_shutter, reconstruction.is_georeferenced() and (not args.sfm_no_partial), self.rerun())
+        if reconstruction.is_georeferenced() and (
+            self.rerun() or not reconstruction_existed
+        ):
+            preserve_canonical_reconstruction(
+                tree.opensfm_reconstruction,
+                tree.opensfm_topocentric_reconstruction,
+            )
+            outputs["fresh_reconstruction"] = True
         octx.extract_cameras(tree.path("cameras.json"), self.rerun())
         self.update_progress(70)
 
@@ -68,15 +91,6 @@ class ODMOpenSfMStage(types.ODM_Stage):
         
         self.update_progress(75)
 
-        # We now switch to a geographic CRS
-        if reconstruction.is_georeferenced() and (not io.file_exists(tree.opensfm_topocentric_reconstruction) or self.rerun()):
-            octx.run('export_geocoords --reconstruction --proj "%s" --offset-x %s --offset-y %s' % 
-                (reconstruction.georef.proj4(), reconstruction.georef.utm_east_offset, reconstruction.georef.utm_north_offset))
-            shutil.move(tree.opensfm_reconstruction, tree.opensfm_topocentric_reconstruction)
-            shutil.move(tree.opensfm_geocoords_reconstruction, tree.opensfm_reconstruction)
-        else:
-            log.WARNING("Will skip exporting %s" % tree.opensfm_geocoords_reconstruction)
-        
         self.update_progress(80)
 
         updated_config_flag_file = octx.path('updated_config.txt')
@@ -84,7 +98,15 @@ class ODMOpenSfMStage(types.ODM_Stage):
         # Make sure it's capped by the depthmap-resolution arg,
         # since the undistorted images are used for MVS
         outputs['undist_image_max_size'] = max(
-            gsd.image_max_size(photos, args.orthophoto_resolution, tree.opensfm_reconstruction, ignore_gsd=args.ignore_gsd, has_gcp=reconstruction.has_gcp()),
+            gsd.image_max_size(
+                photos,
+                args.orthophoto_resolution,
+                tree.opensfm_topocentric_reconstruction
+                if reconstruction.is_georeferenced()
+                else tree.opensfm_reconstruction,
+                ignore_gsd=args.ignore_gsd,
+                has_gcp=reconstruction.has_gcp(),
+            ),
             get_depthmap_resolution(args, photos)
         )
 
