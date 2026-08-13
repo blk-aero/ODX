@@ -13,8 +13,6 @@ from opendm.cutline import compute_cutline
 from opendm.utils import double_quote
 from opendm import pseudogeo
 from opendm.multispectral import get_primary_band_name
-
-
 class ODMOrthoPhotoStage(types.ODM_Stage):
     def process(self, args, outputs):
         tree = outputs['tree']
@@ -29,7 +27,10 @@ class ODMOrthoPhotoStage(types.ODM_Stage):
 
         if not io.file_exists(tree.odm_orthophoto_tif) or self.rerun():
 
-            resolution = gsd.cap_resolution(args.orthophoto_resolution, tree.opensfm_reconstruction,
+            direct_contract = outputs.get("coordinate_contract")
+            working_reconstruction = (tree.opensfm_topocentric_reconstruction
+                                      if direct_contract else tree.opensfm_reconstruction)
+            resolution = gsd.cap_resolution(args.orthophoto_resolution, working_reconstruction,
                                             ignore_gsd=args.ignore_gsd,
                                             ignore_resolution=(not reconstruction.is_georeferenced()) and args.ignore_gsd,
                                             has_gcp=reconstruction.has_gcp())
@@ -97,10 +98,14 @@ class ODMOrthoPhotoStage(types.ODM_Stage):
 
             if reconstruction.is_georeferenced():
                 orthophoto_vars = orthophoto.get_orthophoto_vars(args)
-                kwargs['utm_offsets'] = "-utm_north_offset %s -utm_east_offset %s" % (reconstruction.georef.utm_north_offset, reconstruction.georef.utm_east_offset)
-                kwargs['a_srs'] = "-a_srs \"%s\"" % reconstruction.georef.proj4()
+                if direct_contract:
+                    kwargs['utm_offsets'] = "-utm_north_offset %s -utm_east_offset %s" % (direct_contract.storage_offset[1], direct_contract.storage_offset[0])
+                    kwargs['a_srs'] = "-a_srs %s" % double_quote(direct_contract.output_crs_wkt)
+                else:
+                    kwargs['utm_offsets'] = "-utm_north_offset %s -utm_east_offset %s" % (reconstruction.georef.utm_north_offset, reconstruction.georef.utm_east_offset)
+                    kwargs['a_srs'] = "-a_srs \"%s\"" % reconstruction.georef.proj4()
                 kwargs['vars'] = ' '.join(['-co %s=%s' % (k, orthophoto_vars[k]) for k in orthophoto_vars])
-                kwargs['ortho'] = tree.odm_orthophoto_tif # Render directly to final file
+                kwargs['ortho'] = tree.odm_orthophoto_tif
 
             # run odm_orthophoto
             log.INFO('Creating GeoTIFF')

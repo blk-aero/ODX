@@ -70,6 +70,9 @@ class ODMMvsTexStage(types.ODM_Stage):
 
             odm_textured_model_obj = os.path.join(r['out_dir'], tree.odm_textured_model_obj)
             unaligned_obj = io.related_file_path(odm_textured_model_obj, postfix="_unaligned")
+            topocentric_obj = io.related_file_path(
+                odm_textured_model_obj, postfix="_topocentric"
+            )
 
             if not io.file_exists(odm_textured_model_obj) or self.rerun():
                 log.INFO('Writing MVS Textured file in: %s'
@@ -77,6 +80,8 @@ class ODMMvsTexStage(types.ODM_Stage):
 
                 if os.path.isfile(unaligned_obj):
                     os.unlink(unaligned_obj)
+                if reconstruction.is_georeferenced() and os.path.isfile(topocentric_obj):
+                    os.unlink(topocentric_obj)
 
                 # Format arguments to fit Mvs-Texturing app
                 skipGlobalSeamLeveling = ""
@@ -158,6 +163,9 @@ class ODMMvsTexStage(types.ODM_Stage):
                     nongeo_mtl = os.path.join(r['out_dir'], 'odm_textured_model.mtl')
                     shutil.copy(geo_mtl, nongeo_mtl)
 
+                if reconstruction.is_georeferenced():
+                    shutil.copyfile(odm_textured_model_obj, topocentric_obj)
+
                 progress += progress_per_run
                 self.update_progress(progress)
             else:
@@ -172,4 +180,3 @@ class ODMMvsTexStage(types.ODM_Stage):
             undistorted_images_path = os.path.join(tree.opensfm, "undistorted", "images")
             if io.dir_exists(undistorted_images_path):
                 shutil.rmtree(undistorted_images_path)
-
