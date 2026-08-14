@@ -27,7 +27,7 @@ from opendm.georeferencing import (
     resolve_stage_coordinate_contract,
 )
 from opendm.multispectral import get_photos_by_band, get_primary_band_name
-from opendm.osfm import OSFMContext, is_submodel
+from opendm.osfm import OSFMContext
 from opendm.boundary import as_polygon, export_to_bounds_files
 from opendm.align import compute_alignment_matrix, transform_point_cloud, transform_obj
 from opendm.utils import np_to_json
@@ -35,6 +35,12 @@ from opendm.utils import np_to_json
 
 def _vertical_reference(reconstruction, args):
     has_gcp = reconstruction.has_gcp()
+    if has_gcp and any(
+        not entry.is_checkpoint() and not math.isnan(entry.z)
+        for entry in reconstruction.gcp.iter_entries()
+    ):
+        return VerticalReference.WGS84_ELLIPSOIDAL
+
     if not has_gcp or getattr(args, "force_gps", False):
         photos = (
             get_photos_by_band(reconstruction.multi_camera, args.primary_band)
@@ -57,13 +63,7 @@ class ODMGeoreferencingStage(types.ODM_Stage):
         coordinate_contract_path = tree.path(
             "odm_georeferencing", "coordinate_contract.json"
         )
-        if reconstruction.is_georeferenced() and (
-            tree.odm_align_file is None
-            and not is_submodel(tree.opensfm)
-            and not args.auto_boundary
-            and "boundary" not in outputs
-            and not args.boundary
-        ):
+        if reconstruction.is_georeferenced():
             try:
                 materialize_canonical_reconstruction(
                     tree.opensfm_reconstruction,
@@ -257,7 +257,7 @@ class ODMGeoreferencingStage(types.ODM_Stage):
                     ]
                     if point_cloud_vlrs:
                         fallback_params.append(
-                            '--writers.las.vlrs=%s' % shlex.quote(json.dumps(point_cloud_vlrs))
+                            '--writers.las.vlrs=%s' % shlex.quote(json.dumps(point_cloud_vlrs[0]))
                         )
                     system.run(
                         cmd + ' ferry transformation ' + ' '.join(fallback_params)

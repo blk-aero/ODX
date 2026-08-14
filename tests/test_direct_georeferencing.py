@@ -162,7 +162,7 @@ def write_point_cloud(path):
 
 
 class TestDirectGeoreferencingStage(unittest.TestCase):
-    def test_keeps_stock_options_available(self):
+    def test_uses_coordinate_contract_with_options(self):
         cases = ("align", "boundary", "auto_boundary", "submodel")
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
@@ -178,7 +178,6 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                     "tree": tree,
                     "reconstruction": GeoreferencedReconstruction(),
                     "fresh_reconstruction": True,
-                    "stock_georeferenced_reconstruction": case in ("align", "submodel"),
                 }
                 if case == "align":
                     tree.odm_align_file = os.path.join(root, "align.laz")
@@ -204,8 +203,7 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                     )
 
                 self.assertTrue(os.path.exists(public_mesh))
-                if case in ("boundary", "auto_boundary"):
-                    self.assertNotIn("coordinate_contract", outputs)
+                self.assertIn("coordinate_contract", outputs)
 
     def test_mesh_failure_clears_contract_before_stock_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -287,10 +285,9 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
             for argument in shlex.split(command)
             if argument.startswith("--writers.las.vlrs=")
         )
-        self.assertEqual(
-            json.loads(vlr_argument.split("=", 1)[1])[0]["filename"],
-            zip_path.replace(os.sep, "/"),
-        )
+        vlr = json.loads(vlr_argument.split("=", 1)[1])
+        self.assertIsInstance(vlr, dict)
+        self.assertEqual(vlr["filename"], zip_path.replace(os.sep, "/"))
 
     def test_selects_vertical_state_and_preserves_relative_z(self):
         class GCP:
@@ -335,7 +332,7 @@ class TestDirectGeoreferencingStage(unittest.TestCase):
                 ),
                 args,
             ),
-            VerticalReference.UNREFERENCED,
+            VerticalReference.WGS84_ELLIPSOIDAL,
         )
 
         with tempfile.TemporaryDirectory() as directory:
