@@ -84,7 +84,7 @@ def cap_resolution(resolution, reconstruction_json, gsd_error_estimate = 0.1, gs
 @lru_cache(maxsize=None)
 def opensfm_reconstruction_percentile_gsd(reconstruction_json, use_all_shots=False, percentile=10):
     gsds = opensfm_reconstruction_gsds(reconstruction_json, use_all_shots=use_all_shots)
-    if len(gsds) > 0:
+    if gsds is not None and len(gsds) > 0:
         g = np.array(gsds)
         if np.any(g<0):
             log.WARNING("Negative GSDs detected, this might indicate a flipped Z-axis.")
@@ -95,7 +95,7 @@ def opensfm_reconstruction_percentile_gsd(reconstruction_json, use_all_shots=Fal
 @lru_cache(maxsize=None)
 def opensfm_reconstruction_average_gsd(reconstruction_json, use_all_shots=False):
     gsds = opensfm_reconstruction_gsds(reconstruction_json, use_all_shots=use_all_shots)
-    if len(gsds) > 0:
+    if gsds is not None and len(gsds) > 0:
         mean = np.mean(gsds)
         if mean < 0:
             log.WARNING("Negative GSD estimated, this might indicate a flipped Z-axis.")
