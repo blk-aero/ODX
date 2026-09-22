@@ -119,6 +119,10 @@ def opensfm_reconstruction_gsds(reconstruction_json, use_all_shots=False):
 
     reconstruction = data[0]
     points = np.array([reconstruction['points'][pointId]['coordinates'] for pointId in reconstruction['points']])
+    if points.ndim != 2 or points.shape[1] != 3 or len(points) < 3:
+        log.WARNING("Need at least 3 points to calculate GSD")
+        return []
+
     tdpoints = points.copy()
     tdpoints[:,2] = 0
     tree = spatial.cKDTree(tdpoints)
